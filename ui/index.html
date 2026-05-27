@@ -712,7 +712,7 @@ $("#winMin").onclick = ()=>{
 let providers = [];
 init();
 async function init(){
-  loadSounds();   // discover which mp3s the user has dropped in sounds/
+  await loadSounds();   // discover & preload first, so startup actually plays
   try{
     const s = await fetch("/api/status").then(r=>r.json());
     providers = s.providers || [];
@@ -736,7 +736,6 @@ async function init(){
 //   build.<ext>     plays when ⬛ build succeeds
 // If a file isn't there, nothing happens — no errors, no nags.
 const SOUNDS = { startup: null, done: null, build: null };
-let _soundsReady = false;
 async function loadSounds(){
   try{
     const r = await fetch("/api/sounds").then(r=>r.json());
@@ -746,21 +745,20 @@ async function loadSounds(){
         const a = new Audio(map[k]);
         a.preload = "auto";
         a.volume  = 0.85;
+        a.load();   // explicitly kick off the download so it's buffered by the time we play
         SOUNDS[k] = a;
       }
     }
-    _soundsReady = true;
   }catch(_){ /* offline — fine */ }
 }
 function playSound(which){
   const a = SOUNDS[which];
   if(!a) return;
   try{
-    // clone so rapid-fire triggers (e.g. iterating fast) can overlap, and so a
-    // long sample restarts cleanly each time
-    const c = a.cloneNode();
-    c.volume = a.volume;
-    const p = c.play();
+    // restart cleanly so rapid-fire triggers don't stack
+    a.pause();
+    a.currentTime = 0;
+    const p = a.play();
     if(p && p.catch) p.catch(()=>{ /* autoplay blocked on this OS/browser — silent */ });
   }catch(_){ /* never let a missing sound break the flow */ }
 }
