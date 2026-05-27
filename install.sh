@@ -65,7 +65,8 @@ SELF_DIR="$( cd "$( dirname "${BASH_SOURCE[0]:-$0}" )" 2>/dev/null && pwd || tru
 if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/thedawg.py" ]; then
   step "using local copy at $SELF_DIR"
   cp -rf "$SELF_DIR/thedawg.py" "$SELF_DIR/ui" "$SELF_DIR/assets" "$SRC_DIR/"
-  [ -d "$SELF_DIR/sounds" ] && cp -rf "$SELF_DIR/sounds" "$SRC_DIR/" || mkdir -p "$SRC_DIR/sounds"
+  mkdir -p "$SRC_DIR/sounds"
+  [ -d "$SELF_DIR/sounds" ] && cp -rf "$SELF_DIR/sounds/." "$SRC_DIR/sounds/"
   [ -f "$SELF_DIR/README.md" ] && cp -f "$SELF_DIR/README.md" "$SRC_DIR/" || true
   [ -f "$SELF_DIR/LICENSE" ]   && cp -f "$SELF_DIR/LICENSE"   "$SRC_DIR/" || true
 else
