@@ -30,13 +30,13 @@ It's the cross-platform sibling of [pysmith](https://github.com/the-priest/pysmi
 ### Linux / macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/the-priest/thedawg/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/the-priest/theDawg/main/install.sh | bash
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/the-priest/thedawg/main/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/the-priest/theDawg/main/install.ps1 | iex
 ```
 
 Both installers are per-user, no admin/sudo needed. They drop a `thedawg` launcher on your PATH and (on Linux) a desktop entry so it appears in your app menu, (on Windows) a Start Menu shortcut.
@@ -44,7 +44,7 @@ Both installers are per-user, no admin/sudo needed. They drop a `thedawg` launch
 ### From a clone
 
 ```bash
-git clone https://github.com/the-priest/thedawg
+git clone https://github.com/the-priest/theDawg
 cd thedawg
 ./install.sh        # Linux / macOS
 .\install.ps1       # Windows
