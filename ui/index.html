@@ -1,12 +1,11 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TheDawg</title>
+<title>TheDawg — Linux toolsmith</title>
 <link rel="icon" href="/assets/icon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <style>
@@ -15,16 +14,15 @@
     --line:#262d31; --line2:#1d2225;
     --ink:#e7eaeb; --dim:#8a9398; --faint:#596268; --steel:#c7ced2;
     --amber:#e8a33d; --ember:#e07a3a; --lime:#9fe04a; --cyan:#46c7d4; --red:#e0594a;
+    --mag:#c79be0;
     --mono:"JetBrains Mono",ui-monospace,monospace;
     --ui:"Sora",system-ui,sans-serif;
-    /* Global UI scale. 1 = normal. The Settings "interface size" slider sets
-       this; it's applied as zoom on .app so EVERYTHING (layout, fonts, spacing)
-       scales together. Clamped 0.6–1.6 in JS, and a Reset button restores 1, so
-       the UI can never be scaled into an unusable state. */
-    --ui-scale:1;
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
+  /* Interface-size scaling is applied as `zoom` on <html> (the document root) in JS.
+     Zooming the root keeps position:fixed painting and hit-testing in lockstep, so
+     modals never become "visible but unclickable". Default is no zoom at all. */
   body{
     font-family:var(--ui);font-size:14px;color:var(--ink);overflow:hidden;
     background:
@@ -36,10 +34,10 @@
     background-image:linear-gradient(rgba(255,255,255,.014) 1px,transparent 1px),
       linear-gradient(90deg,rgba(255,255,255,.014) 1px,transparent 1px);
     background-size:30px 30px;}
-  .app{display:grid;grid-template-rows:34px 54px auto 1fr;height:100vh;position:relative;z-index:1;
-    zoom:var(--ui-scale);}
 
-  /* animated hacker background */
+  .app{display:grid;grid-template-rows:34px 54px 1fr;height:100vh;position:relative;z-index:1}
+
+  /* animated forge background */
   .bg-fx{position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none}
   .bg-dragon{position:absolute;top:50%;left:50%;width:min(120vh,120vw);height:min(120vh,120vw);
     transform:translate(-50%,-50%);opacity:.10;animation:breathe 14s ease-in-out infinite}
@@ -63,13 +61,14 @@
   .tb-title .tb-sub{color:var(--faint)}
   .tb-right{width:60px;text-align:right}
   .tb-status{color:var(--lime);font-size:9px;animation:pulse 2.4s infinite}
-  .drop-overlay{position:fixed;inset:0;z-index:40;background:rgba(10,12,13,.82);backdrop-filter:blur(3px);
-    display:flex;align-items:center;justify-content:center;border:3px dashed var(--amber);}
-  .drop-inner{font-family:var(--mono);font-size:18px;color:var(--amber);letter-spacing:.06em;
-    padding:40px 60px;border-radius:16px;background:var(--panel);border:1px solid var(--line)}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 
-  /* ---------- top bar ---------- */
+  .drop-overlay{position:fixed;inset:0;z-index:40;background:rgba(10,12,13,.82);backdrop-filter:blur(3px);
+    display:flex;align-items:center;justify-content:center;border:3px dashed var(--amber)}
+  .drop-inner{font-family:var(--mono);font-size:18px;color:var(--amber);letter-spacing:.06em;
+    padding:40px 60px;border-radius:16px;background:var(--panel);border:1px solid var(--line)}
+
+  /* top bar */
   .top{display:flex;align-items:center;gap:14px;padding:0 16px;
     background:linear-gradient(180deg,#171c1f,#11161800);
     border-bottom:1px solid var(--line);z-index:5}
@@ -86,8 +85,7 @@
   .badge.testing{background:rgba(232,163,61,.14);color:var(--amber);border:1px solid rgba(232,163,61,.3)}
   .badge.release{background:rgba(159,224,74,.14);color:var(--lime);border:1px solid rgba(159,224,74,.3)}
   .spacer{flex:1}
-  .model-pill{font-family:var(--mono);font-size:11px;color:var(--dim);
-    display:flex;align-items:center;gap:7px}
+  .model-pill{font-family:var(--mono);font-size:11px;color:var(--dim);display:flex;align-items:center;gap:7px}
   .model-pill .dot{width:7px;height:7px;border-radius:50%;background:var(--faint)}
   .model-pill .dot.on{background:var(--lime);box-shadow:0 0 7px var(--lime)}
   .provider-pick{background:var(--panel);border:1px solid var(--line);border-radius:8px;color:var(--ink);
@@ -97,7 +95,7 @@
     width:34px;height:34px;cursor:pointer;font-size:15px;transition:.13s;display:grid;place-items:center}
   .icon-btn:hover{color:var(--ink);border-color:var(--amber)}
 
-  /* ---------- main split ---------- */
+  /* main split — desktop two columns */
   .main{display:grid;grid-template-columns:480px 1fr;min-height:0}
 
   /* dialogue column */
@@ -143,8 +141,7 @@
   @keyframes spark{0%,100%{opacity:.25;transform:translateY(0)}50%{opacity:1;transform:translateY(-3px)}}
 
   .composer{padding:12px 16px 16px;border-top:1px solid var(--line)}
-  .composer .box{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:8px;
-    transition:.15s}
+  .composer .box{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:8px;transition:.15s}
   .composer .box:focus-within{border-color:var(--amber);box-shadow:0 0 0 3px rgba(232,163,61,.08)}
   .composer textarea{width:100%;border:none;background:none;color:var(--ink);font-family:var(--ui);
     font-size:13.5px;resize:none;outline:none;line-height:1.5;max-height:140px}
@@ -160,7 +157,6 @@
     font-family:var(--ui);font-size:12px;font-weight:600;padding:7px 11px;cursor:pointer;transition:.13s;
     display:inline-flex;align-items:center;gap:6px}
   .attach-btn:hover{border-color:var(--amber);color:var(--ink)}
-  .attach-btn.dragover{border-color:var(--amber);color:var(--amber);background:rgba(232,163,61,.08)}
   .attach-row{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
   .attach-row:empty{display:none}
   .chip{display:inline-flex;align-items:center;gap:7px;background:var(--panel);border:1px solid var(--line);
@@ -173,14 +169,13 @@
   .chip .rm:hover{color:var(--red)}
 
   /* workspace column */
-  .work{display:grid;grid-template-rows:1.6fr 1fr;min-height:0}
+  .work{display:grid;grid-template-rows:1.6fr 1fr;min-height:0;position:relative}
   .codewrap,.testwrap{display:flex;flex-direction:column;min-height:0}
   .codewrap{border-bottom:1px solid var(--line)}
-  .wh{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line2);
-    background:var(--bg2)}
+  .wh{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line2);background:var(--bg2)}
   .wh .label{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--faint);text-transform:uppercase}
   .wh .fname{font-family:var(--mono);font-size:12px;color:var(--steel)}
-  .wh .acts{margin-left:auto;display:flex;gap:8px}
+  .wh .acts{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
   .btn{background:var(--panel);border:1px solid var(--line);border-radius:8px;color:var(--ink);
     font-family:var(--ui);font-weight:600;font-size:12.5px;padding:7px 13px;cursor:pointer;
     transition:.13s;display:inline-flex;align-items:center;gap:7px}
@@ -201,8 +196,8 @@
   .btn.polish{background:linear-gradient(180deg,#b478e6,#8a4fc4);color:#150a22;border-color:#8a4fc4;
     box-shadow:0 0 0 1px #0004,0 3px 12px rgba(138,79,196,.25)}
   .btn.polish:hover{filter:brightness(1.08);color:#150a22;border-color:#8a4fc4}
-  .btn.polish.running{background:linear-gradient(180deg,#e0594a,#b53d30);border-color:#b53d30}
-  .polish-status{font-family:var(--mono);font-size:11px;color:var(--mag,#c79be0)}
+  .btn.polish.running{background:linear-gradient(180deg,#e0594a,#b53d30);border-color:#b53d30;color:#fff}
+  .polish-status{font-family:var(--mono);font-size:11px;color:var(--mag)}
 
   .codebody{flex:1;overflow:auto;min-height:0;position:relative}
   pre.code{margin:0;padding:14px 16px 18px;font-family:var(--mono);font-size:12.5px;line-height:1.62;
@@ -210,7 +205,6 @@
   pre.code .line{display:block;white-space:pre;padding-left:46px;position:relative;min-height:1.62em}
   pre.code .line::before{counter-increment:ln;content:counter(ln);position:absolute;left:0;width:34px;
     text-align:right;color:#3c4449;user-select:none}
-  /* forge syntax palette over highlight.js */
   .hljs-keyword,.hljs-built_in{color:#e8a33d}
   .hljs-string,.hljs-meta-string{color:#9fe04a}
   .hljs-comment{color:#5b6469;font-style:italic}
@@ -230,8 +224,7 @@
     border:1px solid var(--line);border-radius:20px;padding:4px 11px;background:var(--panel)}
 
   /* test console */
-  .testtop{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line2);
-    background:var(--bg2)}
+  .testtop{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line2);background:var(--bg2)}
   .testtop .args{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:8px;
     color:var(--ink);font-family:var(--mono);font-size:12px;padding:7px 10px;outline:none}
   .testtop .args:focus{border-color:var(--amber)}
@@ -241,18 +234,24 @@
   .console .out{color:var(--steel)}
   .console .placeholder{color:var(--faint);font-style:italic}
 
-  /* modal */
-  .scrim{position:fixed;inset:0;background:rgba(6,7,8,.72);display:none;align-items:center;justify-content:center;z-index:20;backdrop-filter:blur(3px)}
-  .scrim.on{display:flex}
-  .modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;width:420px;max-width:92vw;padding:20px;
-    box-shadow:0 24px 60px rgba(0,0,0,.5)}
+  /* ---------- modal scrims ----------
+     Closed scrims are display:none AND pointer-events:none so they can never
+     intercept clicks. Open scrims (.on) flex + accept events. Backdrop click and
+     Escape both close — nothing can get stuck over the UI. */
+  .scrim{position:fixed;inset:0;background:rgba(6,7,8,.72);display:none;align-items:center;justify-content:center;
+    z-index:50;backdrop-filter:blur(3px);pointer-events:none}
+  .scrim.on{display:flex;pointer-events:auto}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;width:420px;max-width:92vw;
+    max-height:90vh;overflow:auto;padding:20px;box-shadow:0 24px 60px rgba(0,0,0,.5)}
   .modal h3{margin:0 0 6px;font-size:15px}
   .modal p{margin:0 0 14px;color:var(--dim);font-size:13px;line-height:1.55}
   .modal.danger h3{color:var(--red)}
-  .modal label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--faint);text-transform:uppercase;margin-bottom:6px}
+  .modal label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--faint);
+    text-transform:uppercase;margin-bottom:6px}
   .modal input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--ink);
     font-family:var(--mono);font-size:13px;padding:9px 11px;outline:none;margin-bottom:14px}
   .modal input:focus{border-color:var(--amber)}
+  .modal select.provider-pick{background:var(--bg)}
   .modal .acts{display:flex;gap:9px;justify-content:flex-end}
   .patts{font-family:var(--mono);font-size:12px;color:var(--red);background:rgba(224,89,74,.08);
     border:1px solid rgba(224,89,74,.25);border-radius:8px;padding:9px 11px;margin-bottom:14px}
@@ -288,9 +287,10 @@
     font-family:var(--mono);font-size:11.5px;color:var(--lime);white-space:pre-wrap;word-break:break-all;margin:0}
   .gh-code .btn{position:absolute;top:6px;right:6px;padding:3px 9px;font-size:11px}
   .mono{font-family:var(--mono);color:var(--steel);font-size:12px}
-  /* library slide-in */
-  .library{position:absolute;top:0;right:0;width:300px;height:100%;background:var(--panel);
-    border-left:1px solid var(--line);transform:translateX(100%);transition:transform .22s;z-index:8;
+
+  /* library slide-in (lives inside .work, which is NOT zoomed/fixed — safe) */
+  .library{position:absolute;top:0;right:0;width:320px;height:100%;background:var(--panel);
+    border-left:1px solid var(--line);transform:translateX(100%);transition:transform .22s;z-index:9;
     display:flex;flex-direction:column;box-shadow:-12px 0 30px rgba(0,0,0,.3)}
   .library.on{transform:translateX(0)}
   .lib-h{padding:12px 14px;display:flex;justify-content:space-between;align-items:center;
@@ -302,7 +302,7 @@
   .lib-tab.on{color:var(--amber);border-bottom-color:var(--amber)}
   .lib-x{cursor:pointer}.lib-x:hover{color:var(--red)}
   .lib-body{flex:1;overflow:auto;padding:8px}
-  .lib-empty{color:var(--faint);padding:20px;text-align:center;font-size:12px}
+  .lib-empty{color:var(--faint);padding:20px;text-align:center;font-size:12px;line-height:1.6}
   .lib-item{background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:10px;margin-bottom:8px;cursor:pointer;transition:.12s}
   .lib-item:hover{border-color:var(--amber)}
   .lib-item .nm{font-weight:600;font-size:13px;color:var(--ink)}
@@ -314,86 +314,36 @@
   .lib-item .open{font-size:11px;color:var(--amber)}
   .lib-item .del{font-size:11px;color:var(--faint);cursor:pointer}
   .lib-item .del:hover{color:var(--red)}
+
   /* edit bar + editable textarea */
   .editbar{display:flex;align-items:center;gap:8px;padding:8px 16px;border-top:1px solid var(--line2);background:var(--bg2)}
   .editbar .spacer{flex:1}
   textarea.codeedit{width:100%;height:100%;border:none;background:var(--bg);color:var(--ink);
     font-family:var(--mono);font-size:12.5px;line-height:1.62;padding:14px 16px;resize:none;outline:none;tab-size:4}
+
   /* diff */
   .diffline{display:block;white-space:pre;padding-left:18px;font-family:var(--mono);font-size:12.5px;line-height:1.55}
   .diffline.add{background:rgba(159,224,74,.12);color:var(--lime)}
   .diffline.del{background:rgba(224,89,74,.12);color:var(--red)}
   .diffline.ctx{color:var(--dim)}
-  .diff-h{padding:8px 16px;font-family:var(--mono);font-size:11px;color:var(--amber);border-bottom:1px solid var(--line2);background:var(--bg2);display:flex;justify-content:space-between}
+  .diff-h{padding:8px 16px;font-family:var(--mono);font-size:11px;color:var(--amber);border-bottom:1px solid var(--line2);
+    background:var(--bg2);display:flex;justify-content:space-between}
   .diff-h .x{cursor:pointer;color:var(--faint)}.diff-h .x:hover{color:var(--ink)}
+
+  /* interface-size row in settings */
+  .size-row{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  .size-row input[type=range]{flex:1}
 
   ::-webkit-scrollbar{width:10px;height:10px}
   ::-webkit-scrollbar-thumb{background:#2a3237;border-radius:5px}
   ::-webkit-scrollbar-thumb:hover{background:#343d43}
   ::-webkit-scrollbar-track{background:transparent}
+
   .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--panel);
     border:1px solid var(--line);border-left:3px solid var(--lime);border-radius:9px;padding:11px 16px;
     font-size:13px;color:var(--ink);box-shadow:0 12px 30px rgba(0,0,0,.4);opacity:0;pointer-events:none;
-    transition:.25s;z-index:30}
+    transition:.25s;z-index:60}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
-
-  /* ====================================================================
-     MOBILE / PHOSH LAYOUT
-     --------------------------------------------------------------------
-     The default layout above is the wide DESKTOP one (KDE Plasma, big
-     screen): chat on the left, workspace on the right, side by side.
-
-     On Phosh (the OnePlus 6, ~360–412 CSS px wide, portrait) that side-by
-     -side grid is unusable. This block restacks the UI into a single
-     column and adds a Chat / Workspace tab switcher so each pane gets the
-     full screen width, one at a time.
-
-     IMPORTANT: layout is decided in JS (recomputeLayout), NOT here. JS adds
-     the .mobile-mode class based on the user's Layout preference, the
-     detected desktop environment, and the live viewport width (re-checked
-     on resize / rotation). These rules just STYLE .mobile-mode; there is no
-     CSS media query making its own layout decision, so the two can never
-     disagree. The .pane-tabs bar is hidden by default and shown only in
-     .mobile-mode.
-     ==================================================================== */
-  .pane-tabs{display:none}
-
-  /* mobile rules — all gated on the JS-applied .mobile-mode class */
-  .mobile-mode .main{grid-template-columns:1fr !important}
-  .mobile-mode .dialogue{border-right:none}
-  /* show only the active pane; the tab bar toggles show-chat / show-work */
-  .mobile-mode .dialogue{display:none}
-  .mobile-mode .work{display:none}
-  .mobile-mode.show-chat .dialogue{display:flex}
-  .mobile-mode.show-work .work{display:grid}
-  /* the workspace stacks its two halves and lets the page scroll instead
-     of squeezing code + test into a fixed split */
-  .mobile-mode .work{grid-template-rows:auto auto;min-height:0}
-  .mobile-mode .codewrap{min-height:46vh}
-  .mobile-mode .testwrap{min-height:34vh}
-  /* the pane tab bar itself */
-  .mobile-mode .pane-tabs{display:flex;gap:0;background:var(--bg2);
-    border-bottom:1px solid var(--line)}
-  .pane-tabs button{flex:1;background:transparent;border:none;
-    border-bottom:2px solid transparent;color:var(--dim);font-family:var(--mono);
-    font-size:11px;letter-spacing:.12em;text-transform:uppercase;padding:11px 8px;
-    cursor:pointer;transition:.13s}
-  .pane-tabs button.on{color:var(--amber);border-bottom-color:var(--amber)}
-  .pane-tabs button:hover{color:var(--ink)}
-  /* roomier touch targets + a bit more breathing space on small screens */
-  .mobile-mode .top{flex-wrap:wrap;height:auto;padding:8px 12px;gap:8px}
-  .mobile-mode .btn{padding:9px 13px}
-  .mobile-mode .icon-btn{width:38px;height:38px}
-  .mobile-mode .testbar{padding:8px 12px}
-  .mobile-mode .modal{width:94vw;max-width:94vw}
-
-  /* layout-choice buttons in Settings */
-  .lay-row{display:flex;gap:6px;margin-bottom:6px}
-  .lay-row button{flex:1;background:var(--bg2);border:1px solid var(--line);
-    color:var(--dim);font-family:var(--mono);font-size:11px;letter-spacing:.08em;
-    text-transform:uppercase;padding:9px 6px;border-radius:7px;cursor:pointer;transition:.13s}
-  .lay-row button.on{color:var(--amber);border-color:var(--amber)}
-  .lay-row button:hover{color:var(--ink)}
 </style>
 </head>
 <body>
@@ -406,22 +356,14 @@
       </radialGradient>
     </defs>
     <rect width="600" height="600" fill="url(#bgglow)"/>
-    <!-- original angular sigil glyph (placeholder for the Cartman-style icon at /assets/icon.png) -->
     <g fill="none" stroke="#e8a33d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.55">
-      <!-- head + snout -->
       <path d="M210 250 L290 215 L355 230 L395 205 L380 245 L405 255 L368 272 L300 300 Z"/>
-      <!-- lower jaw -->
       <path d="M300 300 L360 300 L392 282"/>
-      <!-- horns sweeping back -->
       <path d="M290 215 Q250 175 200 180 M300 222 Q270 195 235 200"/>
-      <!-- eye -->
       <circle cx="330" cy="248" r="5.5" fill="#e8a33d" stroke="none"/>
-      <!-- neck spines -->
       <path d="M210 250 L175 268 M232 268 L205 295 M255 285 L235 320"/>
-      <!-- wisp of breath from the snout -->
       <path d="M405 255 q34 -4 50 -28 q18 -22 6 -44" stroke="#e07a3a" opacity="0.8"/>
     </g>
-    <!-- circuit corners -->
     <g stroke="#46c7d4" stroke-width="1" opacity="0.16">
       <path d="M60 60 h120 v40 M540 540 h-120 v-40 M60 540 v-100 h60 M540 60 v100 h-60"/>
       <circle cx="180" cy="100" r="3" fill="#46c7d4" stroke="none"/>
@@ -443,7 +385,6 @@
     <div class="tb-right"><span id="tbStatus" class="tb-status">●</span></div>
   </div>
 
-
   <!-- top bar -->
   <div class="top">
     <div class="logo">
@@ -461,15 +402,8 @@
     <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
   </div>
 
-  <!-- pane switcher — only visible in mobile/Phosh layout -->
-  <div class="pane-tabs" id="paneTabs">
-    <button id="tabChat" class="on">◧ Chat</button>
-    <button id="tabWork">◨ Workspace</button>
-  </div>
-
   <!-- main -->
   <div class="main">
-
     <!-- dialogue -->
     <div class="dialogue">
       <div class="dlg-h">
@@ -502,21 +436,21 @@
           <span class="fname" id="codeFile">no draft yet</span>
           <div class="acts">
             <button class="btn ghost" id="diffBtn" disabled title="Show what changed in the last version">⇄ diff</button>
-            <button class="btn ghost" id="reviewBtn" disabled title="AI + static analysis review of the whole tool (finds clashes, bugs, risks)">🔍 review</button>
+            <button class="btn ghost" id="reviewBtn" disabled title="AI + static analysis review of the whole tool">🔍 review</button>
             <button class="btn ghost" id="editBtn" disabled title="Edit the code yourself">✎ edit</button>
             <button class="btn ghost" id="depsBtn" disabled title="Detect &amp; install third-party packages">⬇ deps</button>
             <button class="btn ghost" id="copyBtn" disabled>⧉ copy</button>
             <button class="btn ghost" id="libSaveBtn" disabled title="Save to library">★ library</button>
             <button class="btn release" id="releaseBtn" disabled>◆ get ready for GitHub</button>
             <button class="btn" id="saveBtn" disabled>⤓ save</button>
-            <button class="btn build" id="buildBtn" disabled title="Pack this tool into a single-file executable for this OS (PyInstaller)">⬛ build</button>
+            <button class="btn build" id="buildBtn" disabled title="Pack into a single-file Linux binary (PyInstaller)">⬛ build</button>
           </div>
         </div>
         <div class="codebody" id="codeBody">
           <div class="empty">
             <img src="/assets/icon.svg" alt="">
             <h2>Nothing on the anvil yet</h2>
-            <p>Describe a tool on the left. We'll agree on what it should do, I'll forge a <b style="color:var(--amber)">testing version</b> — a real <b style="color:var(--cyan)">GUI app</b> built for <b>Linux</b> (tuned for Kali on Phosh <i>and</i> KDE Plasma) — you launch it right here, and when it's right I'll package the <b style="color:var(--lime)">release version</b> for GitHub <i>or</i> pack it into a single-file Linux binary with <b style="color:var(--lime)">⬛ build</b>.</p>
+            <p>Describe a tool on the left. We'll agree on what it should do, I'll forge a <b style="color:var(--amber)">testing version</b> — a real <b style="color:var(--cyan)">GUI app</b> built for <b>Linux</b> — you launch it right here, and when it's right I'll package the <b style="color:var(--lime)">release version</b> for GitHub <i>or</i> pack it into a single-file Linux binary with <b style="color:var(--lime)">⬛ build</b>.</p>
             <div class="steps"><span>1 · agree</span><span>2 · test</span><span>3 · iterate</span><span>4 · release</span></div>
           </div>
         </div>
@@ -549,10 +483,10 @@
         </div>
         <div class="testbar">
           <button class="btn ghost" id="fixLogBtn" disabled title="Send the full run log to the AI to diagnose and fix">⮐ send log to AI &amp; fix</button>
-          <button class="btn polish" id="polishBtn" disabled title="Loop: launch → fix → improve, getting more polished each pass">✦ auto-polish loop</button>
+          <button class="btn polish" id="polishBtn" disabled title="Loop: launch → fix → improve each pass">✦ auto-polish loop</button>
           <span class="polish-status" id="polishStatus"></span>
           <span class="spacer"></span>
-          <button class="btn ghost" id="dlLogBtn" disabled title="Download the full session log as a file">⤓ log</button>
+          <button class="btn ghost" id="dlLogBtn" disabled title="Download the full session log">⤓ log</button>
           <button class="btn ghost" id="clearLogBtn" disabled title="Clear the run log">clear log</button>
         </div>
         <div class="console" id="console"><span class="placeholder">Launch output appears here. The tool opens its own window on your desktop — nothing runs on its own, you press the button.</span></div>
@@ -561,39 +495,34 @@
   </div>
 </div>
 
-<!-- settings modal -->
-<div class="scrim" id="settingsScrim">
+<!-- ===== modals: direct children of body, never inside a zoomed container ===== -->
+
+<div class="scrim" id="settingsScrim" data-close="backdrop">
   <div class="modal">
     <h3>Settings</h3>
     <p>Keys stay on this machine (in the local TheDawg process), are never sent to the browser, and persist to a per-user config file. Each provider has its own key.</p>
     <label>Provider</label>
     <select id="keyProvider" class="provider-pick" style="width:100%;margin-bottom:14px"></select>
     <label>API key for the selected provider</label>
-    <input type="password" id="keyInput" placeholder="paste key…">
+    <input type="password" id="keyInput" placeholder="paste key…" autocomplete="off">
     <label style="display:flex;justify-content:space-between;align-items:center">
       <span>Model</span>
       <span id="refreshModels" style="cursor:pointer;color:var(--cyan);text-transform:none;letter-spacing:0;font-family:var(--ui);font-size:11px">↻ refresh from provider</span>
     </label>
     <select id="keyModel" class="provider-pick" style="width:100%;margin-bottom:6px"></select>
     <p id="modelSourceNote" style="font-size:11px;color:var(--faint);margin:0 0 12px">&nbsp;</p>
-    <p style="font-size:12px">TheDawg pulls the live model list from each provider using your key, so the dropdown shows exactly what your account can call. If a key is wrong, you'll see it here. Auto-test rounds: <span style="font-family:var(--mono)">AUTOTEST_MAX_ROUNDS</span>.</p>
-
-    <label>Layout</label>
-    <div class="lay-row">
-      <button id="lay_auto" onclick="setLayoutPref('auto')">Auto</button>
-      <button id="lay_desktop" onclick="setLayoutPref('desktop')">Desktop</button>
-      <button id="lay_mobile" onclick="setLayoutPref('mobile')">Mobile</button>
-    </div>
+    <p style="font-size:12px">TheDawg pulls the live model list from each provider using your key, so the dropdown shows exactly what your account can call. If a key is wrong, you'll see it here. Auto-test rounds: <span id="autotestNote" style="font-family:var(--mono)">—</span>.</p>
 
     <label style="display:flex;justify-content:space-between;align-items:center">
       <span>Interface size</span>
       <span id="scaleReset" style="cursor:pointer;color:var(--cyan);text-transform:none;letter-spacing:0;font-family:var(--ui);font-size:11px">↺ reset</span>
     </label>
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
-      <input type="range" id="scaleSlider" min="60" max="160" step="5" value="100" style="flex:1">
+    <div class="size-row">
+      <input type="range" id="scaleSlider" min="70" max="140" step="5" value="100">
       <span id="scaleVal" style="font-family:var(--mono);font-size:12px;color:var(--steel);min-width:42px;text-align:right">100%</span>
     </div>
-    <p style="font-size:11px;color:var(--faint);margin:0 0 12px" id="deNote">Scales the whole interface. If anything ever looks broken, hit reset to go back to 100%.</p>
+    <p style="font-size:11px;color:var(--faint);margin:0 0 12px">Scales the whole interface. If anything ever looks off, hit reset to go back to 100%.</p>
+
     <div class="acts">
       <button class="btn ghost" id="settingsCancel">cancel</button>
       <button class="btn" id="settingsSave">save key</button>
@@ -601,8 +530,7 @@
   </div>
 </div>
 
-<!-- danger modal -->
-<div class="scrim" id="dangerScrim">
+<div class="scrim" id="dangerScrim" data-close="backdrop">
   <div class="modal danger">
     <h3>⚠ Hold on</h3>
     <p>This draft matches destructive patterns. Read it before you run it — this will execute on your machine as you.</p>
@@ -614,13 +542,10 @@
   </div>
 </div>
 
-<!-- review modal -->
-<div class="scrim" id="reviewScrim">
+<div class="scrim" id="reviewScrim" data-close="backdrop">
   <div class="modal review">
     <h3>🔍 Code review</h3>
-    <div id="reviewBody">
-      <div class="review-loading">Analyzing the whole tool…</div>
-    </div>
+    <div id="reviewBody"><div class="review-loading">Analyzing the whole tool…</div></div>
     <div class="acts">
       <button class="btn ghost" id="reviewClose">close</button>
       <button class="btn" id="reviewFix" style="display:none" title="Ask the AI to fix the issues found">⮐ fix these issues</button>
@@ -628,12 +553,11 @@
   </div>
 </div>
 
-<!-- github modal -->
-<div class="scrim" id="ghScrim">
+<div class="scrim" id="ghScrim" data-close="backdrop">
   <div class="modal gh">
     <div id="ghStage1">
       <h3>◆ Get ready for GitHub</h3>
-      <p>A few details and I'll polish the code and assemble a complete repo — README with a one-line HTTPS install/update command, install.sh, LICENSE, .gitignore, and your push commands.</p>
+      <p>A few details and I'll polish the code and assemble a complete repo — README with a one-line HTTPS install command, install.sh, LICENSE, .gitignore, and your push commands.</p>
       <label>GitHub username</label>
       <input type="text" id="ghUser" placeholder="the-priest">
       <label>Repository name</label>
@@ -675,35 +599,60 @@
 
 <script>
 const $ = s => document.querySelector(s);
-const SYS_TAG = "system"; // role marker
 
+/* ---------- localStorage that never throws (app-mode windows can block it) ---------- */
+function safeGet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
+function safeSet(k,v){ try{ localStorage.setItem(k,v); return true; }catch(e){ return false; } }
+
+/* ---------- interface size: applied as zoom on the ROOT element only ----------
+   Zooming <html> scales painting AND hit-testing together, so modals stay
+   clickable. Default 100% applies no zoom at all. */
+const SCALE_KEY = "thedawg.uiScale";
+function loadScale(){ let v=parseFloat(safeGet(SCALE_KEY)); if(!isFinite(v)) v=1; return Math.min(1.4,Math.max(0.7,v)); }
+function applyScale(v){
+  v = Math.min(1.4, Math.max(0.7, v||1));
+  document.documentElement.style.zoom = (v===1 ? "" : String(v));
+  safeSet(SCALE_KEY, String(v));
+  const sl=$("#scaleSlider"), lab=$("#scaleVal");
+  if(sl) sl.value = Math.round(v*100);
+  if(lab) lab.textContent = Math.round(v*100)+"%";
+  return v;
+}
+try{ applyScale(loadScale()); }catch(e){}
+
+/* ---------- modal helpers: open/close that can NEVER leave the UI stuck ---------- */
+function openScrim(id){ const s=$("#"+id); if(s) s.classList.add("on"); }
+function closeScrim(id){ const s=$("#"+id); if(s) s.classList.remove("on"); }
+function closeAllScrims(){ document.querySelectorAll(".scrim.on").forEach(s=>s.classList.remove("on")); }
+// backdrop click closes; clicks inside the .modal do not bubble a close
+document.querySelectorAll('.scrim[data-close="backdrop"]').forEach(scrim=>{
+  scrim.addEventListener("mousedown", e=>{ if(e.target===scrim) scrim.classList.remove("on"); });
+});
+// Escape closes whatever is open (scrims first, then the library panel)
+document.addEventListener("keydown", e=>{
+  if(e.key!=="Escape") return;
+  const open = document.querySelector(".scrim.on");
+  if(open){ open.classList.remove("on"); return; }
+  const lib = $("#libPanel"); if(lib && lib.classList.contains("on")) lib.classList.remove("on");
+});
+
+/* ============================ app state ============================ */
 let state = {
-  messages: [],          // {role, content} (excludes the system prompt, server prepends none — we send full)
-  code: null,
-  name: "tool",
-  version: "testing",
-  busy: false,
-  pendingRelease: false,
-  intakeDone: false,
-  intakeAnswers: {},
-  prevCode: null,
-  sessionId: null,
-  attachments: [],      // [{name, size, kind:'code'|'ref', text}] staged for the next send
-  testArgs: "",
+  messages: [], code: null, name: "tool", version: "testing",
+  busy: false, pendingRelease: false, intakeDone: false, intakeAnswers: {},
+  prevCode: null, sessionId: null, attachments: [], lastError: null,
+  ghUser: "", ghHolder: "", _panelTab: "sessions", _intakeQs: null,
 };
+let providers = [];
 
-// ---------- attach files (button + drag & drop) ----------
-// Two kinds of attachment:
-//   • a .py file  -> loaded as the working tool (becomes the code on the anvil)
-//   • any other text file (log, config, json, csv, sample data) -> staged as CONTEXT
-//     and included with your next message so the model can build/iterate against it.
-const MAX_FILE = 800000;            // ~800KB per file
+/* ============================ attachments ============================ */
+const MAX_FILE = 800000;
 const CODE_EXTS = ["py","pyw"];
 function fileExt(n){ const m=/\.([^.]+)$/.exec(n||""); return m?m[1].toLowerCase():""; }
 function human(n){ return n<1024?n+" B":n<1048576?(n/1024).toFixed(0)+" KB":(n/1048576).toFixed(1)+" MB"; }
 
 function renderAttachments(){
-  const row = $("#attachRow");
+  const row=$("#attachRow");
   row.innerHTML = state.attachments.map((a,i)=>`
     <span class="chip ${a.kind}" title="${escapeHtml(a.name)}">
       <span>${a.kind==="code"?"🐍":"📎"}</span>
@@ -711,279 +660,88 @@ function renderAttachments(){
       <span class="sz">${human(a.size)}</span>
       <span class="rm" data-i="${i}" title="remove">✕</span>
     </span>`).join("");
-  row.querySelectorAll(".rm").forEach(x=>x.onclick=()=>{
-    state.attachments.splice(+x.dataset.i,1); renderAttachments();
-  });
+  row.querySelectorAll(".rm").forEach(x=>x.onclick=()=>{ state.attachments.splice(+x.dataset.i,1); renderAttachments(); });
 }
-
 async function ingestFiles(fileList){
-  const files = [...fileList];
-  if(!files.length) return;
-  let loadedCode = null;
+  const files=[...fileList]; if(!files.length) return;
+  let loadedCode=null;
   for(const file of files){
-    if(file.size > MAX_FILE){ toast(`"${file.name}" is too big (max ~800KB)`, true); continue; }
-    let text;
-    try{ text = await file.text(); }
-    catch(e){ toast(`Couldn't read "${file.name}"`, true); continue; }
-    if(CODE_EXTS.includes(fileExt(file.name))){
-      loadedCode = {name:file.name, text};   // last .py wins as the working tool
-    }else{
-      state.attachments = state.attachments.filter(a=>a.name!==file.name);  // de-dupe
-      state.attachments.push({name:file.name, size:file.size, kind:"ref", text});
-    }
+    if(file.size>MAX_FILE){ toast(`"${file.name}" is too big (max ~800KB)`, true); continue; }
+    let text; try{ text=await file.text(); }catch(e){ toast(`Couldn't read "${file.name}"`, true); continue; }
+    if(CODE_EXTS.includes(fileExt(file.name))){ loadedCode={name:file.name, text}; }
+    else{ state.attachments=state.attachments.filter(a=>a.name!==file.name); state.attachments.push({name:file.name,size:file.size,kind:"ref",text}); }
   }
   if(loadedCode) loadCodeFile(loadedCode.name, loadedCode.text);
   renderAttachments();
   if(state.attachments.length) toast(`Attached ${state.attachments.length} file(s) — they'll go with your next message`);
 }
-
-// load a .py as the live tool, in a fresh context so we can iterate on it
 function loadCodeFile(fname, text){
-  const lines = text.split(String.fromCharCode(10)).length;
-  state.messages = [
+  const lines=text.split(String.fromCharCode(10)).length;
+  state.messages=[
     {role:"user", content:`I'm bringing in an existing file "${fname}" to work on:\n\`\`\`python\n${text}\n\`\`\``},
     {role:"assistant", content:"Loaded your file into the workspace. Tell me what to debug, fix, improve, or turn into a GUI — or just hit Run."}
   ];
-  state.name = (fname.replace(/\.[^.]+$/,"")||"loaded").replace(/[^A-Za-z0-9_\-]/g,"_");
-  state.intakeDone = true; state.prevCode = null; state.sessionId = null;
+  state.name=(fname.replace(/\.[^.]+$/,"")||"loaded").replace(/[^A-Za-z0-9_\-]/g,"_");
+  state.intakeDone=true; state.prevCode=null; state.sessionId=null;
   $("#thread").innerHTML="";
   addMsg("you", `Loaded: ${fname} (${lines} lines)`);
   addMsg("smith", "Loaded your file into the workspace — it's ready to run, debug, or improve. Tell me what you want to do with it, or hit Run to see how it behaves.");
   loadCode(text); setVersion("testing");
   toast(`Loaded ${fname}`);
 }
-
-// the attach BUTTON
 $("#attachBtn").onclick = ()=>$("#fileInput").click();
 $("#fileInput").onchange = async (e)=>{ await ingestFiles(e.target.files); e.target.value=""; };
 
-// drag & drop anywhere -> same pipeline, with a full-window overlay
+/* drag & drop anywhere -> same pipeline */
 (function(){
   let overlay, depth=0;
   function showOverlay(){
     if(overlay) return;
-    overlay = document.createElement("div");
-    overlay.className = "drop-overlay";
-    overlay.innerHTML = '<div class="drop-inner">⬇ drop files — .py loads as the tool, others attach as context</div>';
+    overlay=document.createElement("div"); overlay.className="drop-overlay";
+    overlay.innerHTML='<div class="drop-inner">⬇ drop files — .py loads as the tool, others attach as context</div>';
     document.body.appendChild(overlay);
   }
   function hideOverlay(){ if(overlay){ overlay.remove(); overlay=null; } depth=0; }
-  window.addEventListener("dragenter", e=>{
-    if(e.dataTransfer && [...e.dataTransfer.types].includes("Files")){ e.preventDefault(); depth++; showOverlay(); }
-  });
-  window.addEventListener("dragover", e=>{
-    if(e.dataTransfer && [...e.dataTransfer.types].includes("Files")) e.preventDefault();
-  });
+  window.addEventListener("dragenter", e=>{ if(e.dataTransfer && [...e.dataTransfer.types].includes("Files")){ e.preventDefault(); depth++; showOverlay(); } });
+  window.addEventListener("dragover", e=>{ if(e.dataTransfer && [...e.dataTransfer.types].includes("Files")) e.preventDefault(); });
   window.addEventListener("dragleave", e=>{ if(!e.relatedTarget){ depth--; if(depth<=0) hideOverlay(); } });
   window.addEventListener("drop", async e=>{
     if(!e.dataTransfer || !e.dataTransfer.files.length){ hideOverlay(); return; }
-    e.preventDefault(); hideOverlay();
-    await ingestFiles(e.dataTransfer.files);
+    e.preventDefault(); hideOverlay(); await ingestFiles(e.dataTransfer.files);
   });
 })();
+
+/* ============================ window controls ============================ */
 $("#winClose").onclick = async ()=>{
   if(!confirm("Quit TheDawg? This stops the local server.")) return;
   try{ await fetch("/api/quit",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}); }catch(e){}
-  // in app-mode the window closes when the server dies; also try to close the window
   try{ window.close(); }catch(e){}
-  document.body.innerHTML = '<div style="height:100vh;display:flex;align-items:center;justify-content:center;color:#8a9398;font-family:monospace">forge banked. later, dawg. you can close this window.</div>';
+  document.body.innerHTML='<div style="height:100vh;display:flex;align-items:center;justify-content:center;color:#8a9398;font-family:monospace">forge banked. later, dawg. you can close this window.</div>';
 };
-$("#winMin").onclick = ()=>{
-  // can't truly minimize a browser window from JS; blur is the closest honest action
-  toast("Minimize is handled by your window manager — use its controls");
-};
+$("#winMin").onclick = ()=>toast("Minimize is handled by your window manager — use its controls");
 
-// ---------- boot ----------
-// localStorage can THROW (not just return null) in app-mode windows, private
-// mode, or when storage is blocked. safeGet/safeSet below swallow that. We also
-// guard the boot line itself: a failure restoring the saved size must never stop
-// init() from running or the button handlers below from being attached.
-function safeGet(key){
-  try{ return localStorage.getItem(key); }catch(e){ return null; }
-}
-function safeSet(key,val){
-  try{ localStorage.setItem(key,val); return true; }catch(e){ return false; }
-}
-let providers = [];
-try{ applyScale(loadScale()); }catch(e){ /* size restore failed; default stays */ }
+/* ============================ boot ============================ */
 init();
 async function init(){
-  await loadSounds();   // discover & preload first, so startup actually plays
+  await loadSounds();
   try{
     const s = await fetch("/api/status").then(r=>r.json());
     providers = s.providers || [];
-    const pick = $("#providerPick");
-    pick.innerHTML = providers.map(p=>
+    $("#providerPick").innerHTML = providers.map(p=>
       `<option value="${p.id}" ${p.id===s.provider?"selected":""}>${p.label}${p.hasKey?"":" (no key)"}</option>`
     ).join("");
     $("#modelName").textContent = s.model || "ready";
     reflectKey(s.hasKey);
-    applyLayout(s.desktop);   // pick desktop vs mobile/Phosh layout
+    const an=$("#autotestNote"); if(an) an.textContent = (s.autotest!=null? s.autotest : "—");
     if(!s.hasKey) openSettings();
-  }catch(e){ $("#modelName").textContent = "server offline"; recomputeLayout(); }
+  }catch(e){ $("#modelName").textContent = "server offline"; }
   greet();
-  playSound("startup");   // fire once boot is complete
+  playSound("startup");
 }
 
-// ====================================================================
-// LAYOUT + INTERFACE SIZE
-// --------------------------------------------------------------------
-// ONE source of truth for layout. recomputeLayout() decides mobile vs
-// desktop from three inputs and toggles a SINGLE class (.mobile-mode):
-//
-//   1. user preference  (Settings → Layout: Auto / Desktop / Mobile),
-//      persisted in localStorage. Desktop/Mobile force it; Auto defers to:
-//   2. what the backend detected  (Phosh => mobile, KDE/other => desktop)
-//   3. the live viewport width  (narrow => mobile), re-checked on resize
-//      and orientation change so rotating the phone or dragging the KDE
-//      window actually reflows — not just at startup.
-//
-// The CSS no longer has its own independent media query making layout
-// decisions; JS owns it, so the two can never disagree.
-//
-// The interface-size slider is separate: a global zoom (0.6–1.6) saved in
-// localStorage with a reset, so size can always be brought back to 100%.
-// ====================================================================
-let LAYOUT = { de: "other", form: "desktop" };   // what the backend detected
-const NARROW_PX = 760;                            // mobile below this width
-
-// --- layout preference (auto / desktop / mobile) ---
-const LAYOUT_KEY = "thedawg.layout";
-function loadLayoutPref(){
-  const v = safeGet(LAYOUT_KEY);
-  return (v === "desktop" || v === "mobile") ? v : "auto";
-}
-function saveLayoutPref(v){
-  safeSet(LAYOUT_KEY, v);
-}
-
-// store the detection result, then let recomputeLayout do the deciding
-function applyLayout(de){
-  LAYOUT = de || LAYOUT;
-  recomputeLayout();
-}
-
-// the single decision point
-function recomputeLayout(){
-  const app = $(".app");
-  if(!app) return;
-  const pref = loadLayoutPref();
-  let mobile;
-  if(pref === "mobile")       mobile = true;
-  else if(pref === "desktop") mobile = false;
-  else                        // auto: detected mobile OR genuinely narrow
-    mobile = (LAYOUT.form === "mobile") || (window.innerWidth <= NARROW_PX);
-
-  app.classList.toggle("mobile-mode", mobile);
-  if(mobile){
-    // keep whichever pane was active; default to chat on first switch
-    setPane(app.classList.contains("show-work") ? "work" : "chat");
-  }
-  syncSettingsLayoutUI(pref, mobile);
-}
-
-// reflect detection + current mode in the Settings panel
-function syncSettingsLayoutUI(pref, mobile){
-  const note = $("#deNote");
-  if(note){
-    const human = {phosh:"Phosh (mobile)", kde:"KDE Plasma (desktop)",
-                   gnome:"GNOME (desktop)", other:"desktop"}[LAYOUT.de] || "desktop";
-    const active = mobile ? "mobile" : "desktop";
-    note.textContent = `Detected: ${human}. Currently showing the ${active} layout.`;
-  }
-  // highlight the active layout button
-  ["auto","desktop","mobile"].forEach(p=>{
-    const b = $("#lay_"+p);
-    if(b) b.classList.toggle("on", p === pref);
-  });
-}
-
-// user picks a layout in Settings
-function setLayoutPref(v){
-  saveLayoutPref(v);
-  recomputeLayout();
-  const label = v === "auto" ? "Auto" : (v === "mobile" ? "Mobile" : "Desktop");
-  toast("Layout: " + label);
-}
-
-// re-evaluate on window resize and phone rotation (debounced)
-let _layoutTimer = null;
-function _onViewportChange(){
-  clearTimeout(_layoutTimer);
-  _layoutTimer = setTimeout(recomputeLayout, 120);
-}
-window.addEventListener("resize", _onViewportChange);
-window.addEventListener("orientationchange", _onViewportChange);
-
-function setPane(which){
-  const app = $(".app");
-  const chat = which === "chat";
-  app.classList.toggle("show-chat", chat);
-  app.classList.toggle("show-work", !chat);
-  const tc = $("#tabChat"), tw = $("#tabWork");
-  if(tc) tc.classList.toggle("on", chat);
-  if(tw) tw.classList.toggle("on", !chat);
-}
-const _tc = $("#tabChat"); if(_tc) _tc.onclick = ()=>setPane("chat");
-const _tw = $("#tabWork"); if(_tw) _tw.onclick = ()=>setPane("work");
-
-// --- interface size (global zoom) ---
-const SCALE_KEY = "thedawg.uiScale";
-function loadScale(){
-  let v = parseFloat(safeGet(SCALE_KEY));
-  if(!isFinite(v)) v = 1;
-  return Math.min(1.6, Math.max(0.6, v));   // clamp — can't be set unusable
-}
-function applyScale(v){
-  v = Math.min(1.6, Math.max(0.6, v || 1));
-  document.documentElement.style.setProperty("--ui-scale", v);
-  safeSet(SCALE_KEY, String(v));
-  const sl = $("#scaleSlider"), lab = $("#scaleVal");
-  if(sl) sl.value = Math.round(v*100);
-  if(lab) lab.textContent = Math.round(v*100) + "%";
-  return v;
-}
-const _ss = $("#scaleSlider"); if(_ss) _ss.addEventListener("input", e=>applyScale((+e.target.value)/100));
-const _sr = $("#scaleReset"); if(_sr) _sr.onclick = ()=>{ applyScale(1); toast("Interface size reset to 100%"); };
-
-// ---------- sound triggers ----------
-// Drop audio files into thedawg/sounds/ with these names — the matching event
-// plays them. Supported: mp3, wav, ogg, m4a, flac (whatever your browser can play).
-//   startup.<ext>   plays once when TheDawg opens
-//   done.<ext>      plays every time the model lands a finished tool
-//   build.<ext>     plays when ⬛ build succeeds
-// If a file isn't there, nothing happens — no errors, no nags.
-const SOUNDS = { startup: null, done: null, build: null };
-async function loadSounds(){
-  try{
-    const r = await fetch("/api/sounds").then(r=>r.json());
-    const map = r.sounds || {};
-    for(const k of Object.keys(SOUNDS)){
-      if(map[k]){
-        const a = new Audio(map[k]);
-        a.preload = "auto";
-        a.volume  = 0.85;
-        a.load();   // explicitly kick off the download so it's buffered by the time we play
-        SOUNDS[k] = a;
-      }
-    }
-  }catch(_){ /* offline — fine */ }
-}
-function playSound(which){
-  const a = SOUNDS[which];
-  if(!a) return;
-  try{
-    // restart cleanly so rapid-fire triggers don't stack
-    a.pause();
-    a.currentTime = 0;
-    const p = a.play();
-    if(p && p.catch) p.catch(()=>{ /* autoplay blocked on this OS/browser — silent */ });
-  }catch(_){ /* never let a missing sound break the flow */ }
-}
-function reflectKey(has){ $("#modelDot").classList.toggle("on", !!has); }
-
+/* ============================ providers (top bar) ============================ */
 $("#providerPick").onchange = async (e)=>{
-  const pid = e.target.value;
+  const pid=e.target.value;
   try{
     const r = await fetch("/api/provider",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({provider:pid})}).then(r=>r.json());
@@ -993,144 +751,136 @@ $("#providerPick").onchange = async (e)=>{
     else toast("Switched to " + (providers.find(p=>p.id===pid)?.label||pid));
   }catch(err){ toast("Couldn't switch provider", true); }
 };
+function reflectKey(has){ $("#modelDot").classList.toggle("on", !!has); }
 
+/* ============================ sounds ============================ */
+const SOUNDS = { startup:null, done:null, build:null };
+async function loadSounds(){
+  try{
+    const r = await fetch("/api/sounds").then(r=>r.json());
+    const map = r.sounds || {};
+    for(const k of Object.keys(SOUNDS)){
+      if(map[k]){ const a=new Audio(map[k]); a.preload="auto"; a.volume=0.85; a.load(); SOUNDS[k]=a; }
+    }
+  }catch(_){}
+}
+let _startupPending=false;   // set if the boot-time startup sound got autoplay-blocked
+function playSound(which){
+  const a=SOUNDS[which]; if(!a) return;
+  try{
+    a.pause(); a.currentTime=0;
+    const p=a.play();
+    if(p&&p.catch) p.catch(()=>{ if(which==="startup") _startupPending=true; });
+  }catch(_){ if(which==="startup") _startupPending=true; }
+}
+// Browsers block audio until the user interacts with the page, so a cold-load
+// startup chime is usually refused. Catch that and fire it on the very first
+// click or keypress instead — startup music plays reliably, autoplay or not.
+function _audioUnlock(){
+  if(_startupPending){ _startupPending=false; playSound("startup"); }
+  window.removeEventListener("pointerdown", _audioUnlock, true);
+  window.removeEventListener("keydown", _audioUnlock, true);
+}
+window.addEventListener("pointerdown", _audioUnlock, true);
+window.addEventListener("keydown", _audioUnlock, true);
+
+/* ============================ dialogue ============================ */
 function greet(){
   addMsg("smith", "Right — what do you want to build? Tell me the job in plain English and I'll either ask a couple of sharp questions or lay out a quick plan. Once we agree, I forge a testing version you can run on the spot.");
 }
-
-// ---------- dialogue ----------
 function addMsg(who, text, codeFlag){
-  const t = $("#thread");
-  const m = document.createElement("div");
-  m.className = "msg " + who;
-  m.innerHTML = `<div class="who">${who==="you"?"you":"dawg"}</div>
-    <div class="bubble"></div>`;
-  m.querySelector(".bubble").textContent = text;
-  if(codeFlag){
-    const f = document.createElement("div");
-    f.className = "codeflag";
-    f.textContent = codeFlag;
-    m.appendChild(f);
-  }
-  t.appendChild(m);
-  t.scrollTop = t.scrollHeight;
-  return m;
+  const t=$("#thread");
+  const m=document.createElement("div"); m.className="msg "+who;
+  m.innerHTML=`<div class="who">${who==="you"?"you":"dawg"}</div><div class="bubble"></div>`;
+  m.querySelector(".bubble").textContent=text;
+  if(codeFlag){ const f=document.createElement("div"); f.className="codeflag"; f.textContent=codeFlag; m.appendChild(f); }
+  t.appendChild(m); t.scrollTop=t.scrollHeight; return m;
 }
 function addThinking(){
-  const t = $("#thread");
-  const m = document.createElement("div");
-  m.className = "msg smith"; m.id = "thinkingMsg";
-  m.innerHTML = `<div class="who">dawg</div>
-    <div class="thinking">forging<span class="sparks"><i></i><i></i><i></i></span></div>`;
-  t.appendChild(m); t.scrollTop = t.scrollHeight;
+  const t=$("#thread");
+  const m=document.createElement("div"); m.className="msg smith"; m.id="thinkingMsg";
+  m.innerHTML=`<div class="who">dawg</div><div class="thinking">forging<span class="sparks"><i></i><i></i><i></i></span></div>`;
+  t.appendChild(m); t.scrollTop=t.scrollHeight;
 }
-function clearThinking(){ const m = $("#thinkingMsg"); if(m) m.remove(); }
+function clearThinking(){ const m=$("#thinkingMsg"); if(m) m.remove(); }
 
-// ---------- send ----------
-const input = $("#input");
+/* ============================ send / intake / converse ============================ */
+const input=$("#input");
 input.addEventListener("input", ()=>{ input.style.height="auto"; input.style.height=Math.min(input.scrollHeight,140)+"px"; });
-input.addEventListener("keydown", e=>{ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send(); }});
-$("#sendBtn").onclick = () => send();   // wrap so the click EVENT is never passed as the message
+input.addEventListener("keydown", e=>{ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send(); } });
+$("#sendBtn").onclick = ()=>send();
 
 async function send(forced){
-  // defensive: only accept a STRING as a forced message. A click handler could pass a
-  // PointerEvent; that must never become the message text (the "[object PointerEvent]" bug).
-  if(typeof forced !== "string") forced = null;
-  const typed = forced || input.value.trim();
-  const hasAttach = state.attachments.length > 0;
-  // allow sending with attachments only (no typed text)
+  if(typeof forced!=="string") forced=null;
+  const typed=forced || input.value.trim();
+  const hasAttach=state.attachments.length>0;
   if((!typed && !hasAttach) || state.busy) return;
   if(!forced){ input.value=""; input.style.height="auto"; }
 
-  // build the visible + model-facing message, folding in any staged reference files
-  let display = typed || "(see attached files)";
-  let payload = typed || "Use the attached file(s) as context for what to build / fix.";
+  let display=typed || "(see attached files)";
+  let payload=typed || "Use the attached file(s) as context for what to build / fix.";
   if(hasAttach){
-    const names = state.attachments.map(a=>a.name).join(", ");
-    display = (typed ? typed + "\n\n" : "") + "📎 attached: " + names;
-    const blobs = state.attachments.map(a=>{
-      const ext = fileExt(a.name);
-      const lang = {json:"json",csv:"csv",sh:"bash",html:"html",xml:"xml",yaml:"yaml",yml:"yaml"}[ext] || "";
+    const names=state.attachments.map(a=>a.name).join(", ");
+    display=(typed?typed+"\n\n":"")+"📎 attached: "+names;
+    const blobs=state.attachments.map(a=>{
+      const ext=fileExt(a.name);
+      const lang={json:"json",csv:"csv",sh:"bash",html:"html",xml:"xml",yaml:"yaml",yml:"yaml"}[ext]||"";
       return `--- attached file: ${a.name} ---\n\`\`\`${lang}\n${a.text}\n\`\`\``;
     }).join("\n\n");
-    payload = (typed ? typed + "\n\n" : "Here are reference files for this tool:\n\n") + blobs;
-    state.attachments = []; renderAttachments();   // consumed
+    payload=(typed?typed+"\n\n":"Here are reference files for this tool:\n\n")+blobs;
+    state.attachments=[]; renderAttachments();
   }
 
   addMsg("you", display);
   state.messages.push({role:"user", content:payload});
 
-  // First substantive request of a fresh tool → run structured intake first,
-  // unless the user opted out for this tool.
   if(!state.intakeDone && !state.code && state.messages.filter(m=>m.role==="user").length===1){
-    const did = await runIntake(typed || payload);
-    if(did) return;   // intake is showing; build happens after they answer
+    const did=await runIntake(typed||payload);
+    if(did) return;
   }
   await converse();
 }
 
 async function runIntake(request){
-  state.busy = true; $("#sendBtn").disabled = true; addThinking();
+  state.busy=true; $("#sendBtn").disabled=true; addThinking();
   let res;
   try{
     res = await fetch("/api/intake",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({request, provider:$("#providerPick").value})}).then(r=>r.json());
-  }catch(e){ res = {error:"server"}; }
+  }catch(e){ res={error:"server"}; }
   clearThinking(); state.busy=false; $("#sendBtn").disabled=false;
-  if(res.error || !res.intake || !res.intake.questions || !res.intake.questions.length){
-    state.intakeDone = true;   // couldn't make questions → just build
-    return false;
-  }
-  renderIntake(res.intake);
-  return true;
+  if(res.error || !res.intake || !res.intake.questions || !res.intake.questions.length){ state.intakeDone=true; return false; }
+  renderIntake(res.intake); return true;
 }
-
 function renderIntake(intake){
-  state.intakeDone = true;
-  state.intakeAnswers = {};
-  const t = $("#thread");
-  const m = document.createElement("div");
-  m.className = "msg smith intake";
-  let html = `<div class="who">dawg</div><div class="bubble">`;
-  if(intake.summary) html += `<div class="intake-sum">${escapeHtml(intake.summary)}</div>`;
-  html += `<div class="intake-note">A few quick choices so I build exactly what you want:</div>`;
+  state.intakeDone=true; state.intakeAnswers={};
+  const t=$("#thread");
+  const m=document.createElement("div"); m.className="msg smith intake";
+  let html=`<div class="who">dawg</div><div class="bubble">`;
+  if(intake.summary) html+=`<div class="intake-sum">${escapeHtml(intake.summary)}</div>`;
+  html+=`<div class="intake-note">A few quick choices so I build exactly what you want:</div>`;
   intake.questions.forEach((q,qi)=>{
-    html += `<div class="iq" data-qi="${qi}"><div class="iq-q">${escapeHtml(q.q)}</div><div class="iq-opts">`;
-    q.options.forEach((o,oi)=>{
-      html += `<button class="iq-opt" data-qi="${qi}" data-oi="${oi}" data-multi="${q.multi}">${escapeHtml(o)}</button>`;
-    });
-    html += `</div></div>`;
+    html+=`<div class="iq" data-qi="${qi}"><div class="iq-q">${escapeHtml(q.q)}</div><div class="iq-opts">`;
+    q.options.forEach((o,oi)=>{ html+=`<button class="iq-opt" data-qi="${qi}" data-oi="${oi}" data-multi="${q.multi}">${escapeHtml(o)}</button>`; });
+    html+=`</div></div>`;
   });
-  html += `<div class="intake-actions">
-    <button class="btn ghost" id="intakeSkip">skip — just build it</button>
-    <button class="btn primary" id="intakeBuild" disabled>build it ▸</button>
-  </div></div>`;
-  m.innerHTML = html;
-  t.appendChild(m); t.scrollTop = t.scrollHeight;
-
-  state._intakeQs = intake.questions;
+  html+=`<div class="intake-actions"><button class="btn ghost" id="intakeSkip">skip — just build it</button><button class="btn primary" id="intakeBuild" disabled>build it ▸</button></div></div>`;
+  m.innerHTML=html; t.appendChild(m); t.scrollTop=t.scrollHeight;
+  state._intakeQs=intake.questions;
   m.querySelectorAll(".iq-opt").forEach(btn=>{
-    btn.onclick = ()=>{
-      const qi = +btn.dataset.qi, multi = btn.dataset.multi==="true";
-      const group = m.querySelectorAll(`.iq-opt[data-qi="${qi}"]`);
-      if(multi){ btn.classList.toggle("on"); }
-      else { group.forEach(b=>b.classList.remove("on")); btn.classList.add("on"); }
-      // record answers
-      const picked = [...group].filter(b=>b.classList.contains("on"))
-                     .map(b=>state._intakeQs[qi].options[+b.dataset.oi]);
-      state.intakeAnswers[state._intakeQs[qi].q] = picked;
-      // enable build once every question has an answer
-      const allAnswered = state._intakeQs.every((q,i)=>{
-        const g = m.querySelectorAll(`.iq-opt[data-qi="${i}"].on`); return g.length>0;
-      });
-      $("#intakeBuild").disabled = !allAnswered;
+    btn.onclick=()=>{
+      const qi=+btn.dataset.qi, multi=btn.dataset.multi==="true";
+      const group=m.querySelectorAll(`.iq-opt[data-qi="${qi}"]`);
+      if(multi){ btn.classList.toggle("on"); } else { group.forEach(b=>b.classList.remove("on")); btn.classList.add("on"); }
+      const picked=[...group].filter(b=>b.classList.contains("on")).map(b=>state._intakeQs[qi].options[+b.dataset.oi]);
+      state.intakeAnswers[state._intakeQs[qi].q]=picked;
+      const allAnswered=state._intakeQs.every((q,i)=>m.querySelectorAll(`.iq-opt[data-qi="${i}"].on`).length>0);
+      $("#intakeBuild").disabled=!allAnswered;
     };
   });
-  $("#intakeSkip").onclick = ()=>{ m.querySelector(".intake-actions").remove(); converse(); };
-  $("#intakeBuild").onclick = ()=>{
-    // turn answers into a crisp spec message, lock the cards, then build
-    const spec = Object.entries(state.intakeAnswers)
-      .map(([q,a])=>`- ${q} ${a.join(", ")}`).join("\n");
+  $("#intakeSkip").onclick=()=>{ m.querySelector(".intake-actions").remove(); converse(); };
+  $("#intakeBuild").onclick=()=>{
+    const spec=Object.entries(state.intakeAnswers).map(([q,a])=>`- ${q} ${a.join(", ")}`).join("\n");
     m.querySelectorAll(".iq-opt").forEach(b=>b.disabled=true);
     m.querySelector(".intake-actions").remove();
     state.messages.push({role:"user", content:"Build precisely to these choices:\n"+spec});
@@ -1140,295 +890,206 @@ function renderIntake(intake){
 }
 
 async function converse(){
-  state.busy = true; $("#sendBtn").disabled = true; addThinking();
-  // We send only the conversation; the local server prepends the authoritative
-  // tool-building methodology as the system prompt.
+  state.busy=true; $("#sendBtn").disabled=true; addThinking();
   let res;
   try{
-    res = await fetch("/api/chat", {method:"POST",headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({messages: state.messages, provider: $("#providerPick").value})}).then(r=>r.json());
-  }catch(e){ res = {error:"Could not reach the local server."}; }
+    res = await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({messages:state.messages, provider:$("#providerPick").value})}).then(r=>r.json());
+  }catch(e){ res={error:"Could not reach the local server."}; }
   clearThinking(); state.busy=false; $("#sendBtn").disabled=false;
-
   if(res.error){ addMsg("smith", fmtError(res)); return; }
-  $("#modelName").textContent = res.model || $("#modelName").textContent;
+  $("#modelName").textContent=res.model || $("#modelName").textContent;
   $("#modelDot").classList.add("on");
 
-  const {prose, code} = splitReply(res.reply);
-  const hadCode = !!code;
+  const {prose, code}=splitReply(res.reply);
+  const hadCode=!!code;
   if(code){
     loadCode(code);
-    if(state.pendingRelease){ setVersion("release"); state.pendingRelease=false; }
-    else setVersion("testing");
+    if(state.pendingRelease){ setVersion("release"); state.pendingRelease=false; } else setVersion("testing");
     playSound("done");
   }
-  // build the code flag, including auto-test result if it ran
-  let flag = null;
+  let flag=null;
   if(hadCode){
-    flag = `${state.name}.py updated · ${state.version} version`;
-    const at = res.autotest;
+    flag=`${state.name}.py updated · ${state.version} version`;
+    const at=res.autotest;
     if(at && at.ran){
-      const rounds = (at.rounds||[]).length;
-      if(at.passed){
-        flag += rounds>1 ? `  ·  ✓ auto-tested (fixed in ${rounds-1} round${rounds-1>1?"s":""})`
-                         : `  ·  ✓ auto-tested`;
-      }else{
-        flag += `  ·  ⚠ auto-test still failing after ${rounds} tr${rounds>1?"ies":"y"} — run it to see`;
-      }
+      const rounds=(at.rounds||[]).length;
+      if(at.passed) flag += rounds>1 ? `  ·  ✓ auto-tested (fixed in ${rounds-1} round${rounds-1>1?"s":""})` : `  ·  ✓ auto-tested`;
+      else flag += `  ·  ⚠ auto-test still failing after ${rounds} tr${rounds>1?"ies":"y"} — run it to see`;
     }
   }
-  addMsg("smith", prose || (code ? "Here's the build — try it in the test panel." : res.reply), flag);
+  addMsg("smith", prose || (code?"Here's the build — try it in the test panel.":res.reply), flag);
   state.messages.push({role:"assistant", content:res.reply});
 }
 
 function splitReply(reply){
-  // prefer a python-tagged block; fall back to any fenced block
-  let m = reply.match(/```(?:python|py)\s*\n([\s\S]*?)```/i)
-       || reply.match(/```\s*\n([\s\S]*?)```/);
-  if(!m) return {prose: reply.trim(), code:null};
-  const code = m[1].replace(/\s+$/,"");
-  const prose = reply.replace(m[0], "").trim();
+  let m=reply.match(/```(?:python|py)\s*\n([\s\S]*?)```/i) || reply.match(/```\s*\n([\s\S]*?)```/);
+  if(!m) return {prose:reply.trim(), code:null};
+  const code=m[1].replace(/\s+$/,"");
+  const prose=reply.replace(m[0],"").trim();
   return {prose, code};
 }
 
-// ---------- code pane ----------
+/* ============================ code pane ============================ */
 function loadCode(code){
-  state.prevCode = state.code;   // remember the version we're replacing, for diff
-  state.code = code;
-  guessName(code);
-  $("#codeFile").textContent = state.name + ".py";
-  $("#fileName").textContent = state.name + ".py";
+  state.prevCode=state.code; state.code=code; guessName(code);
+  $("#codeFile").textContent=state.name+".py";
+  $("#fileName").textContent=state.name+".py";
   renderCode(code);
   ["copyBtn","saveBtn","runBtn","releaseBtn","fixLogBtn","polishBtn","dlLogBtn","clearLogBtn",
    "editBtn","depsBtn","libSaveBtn","reviewBtn","buildBtn"].forEach(id=>$("#"+id).disabled=false);
-  $("#diffBtn").disabled = !state.prevCode;
-  autosaveSession();   // a tool exists now → persist the work-in-progress
+  $("#diffBtn").disabled=!state.prevCode;
+  autosaveSession();
 }
-
 let _autosaveTimer;
 function autosaveSession(){
-  // debounced: don't hammer disk on every keystroke-level change
   clearTimeout(_autosaveTimer);
-  _autosaveTimer = setTimeout(async ()=>{
+  _autosaveTimer=setTimeout(async ()=>{
     if(!state.code) return;
     try{
-      const r = await fetch("/api/session/save",{method:"POST",headers:{"Content-Type":"application/json"},
+      const r=await fetch("/api/session/save",{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({id:state.sessionId, name:state.name, code:state.code, messages:state.messages,
-                             version:state.version, args:$("#args").value.trim()})}).then(r=>r.json());
-      if(r.id) state.sessionId = r.id;
-    }catch(e){ /* silent — autosave shouldn't nag */ }
+          version:state.version, args:$("#args").value.trim()})}).then(r=>r.json());
+      if(r.id) state.sessionId=r.id;
+    }catch(e){}
   }, 800);
 }
 function guessName(code){
-  // prefer an argparse prog or a obvious function/class, else keep
-  let m = code.match(/add_parser\(['"]([a-z0-9_\-]+)/i) ||
-          code.match(/prog=['"]([a-z0-9_\-]+)/i) ||
-          code.match(/def\s+([a-z0-9_]{3,})\s*\(/i);
-  if(m) state.name = m[1].replace(/[^a-z0-9_\-]/gi,"_");
+  let m=code.match(/add_parser\(['"]([a-z0-9_\-]+)/i) || code.match(/prog=['"]([a-z0-9_\-]+)/i) || code.match(/def\s+([a-z0-9_]{3,})\s*\(/i);
+  if(m) state.name=m[1].replace(/[^a-z0-9_\-]/gi,"_");
 }
 function renderCode(code){
-  const body = $("#codeBody");
-  body.innerHTML = "";
-  const pre = document.createElement("pre"); pre.className="code";
+  const body=$("#codeBody"); body.innerHTML="";
+  const pre=document.createElement("pre"); pre.className="code";
   let html;
-  try{ html = hljs.highlight(code, {language:"python"}).value; }
-  catch(e){ html = code.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
-  // wrap each line in .line for the gutter
-  pre.innerHTML = html.split("\n").map(l=>`<span class="line">${l||" "}</span>`).join("");
+  try{ html=hljs.highlight(code,{language:"python"}).value; }
+  catch(e){ html=code.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+  pre.innerHTML=html.split("\n").map(l=>`<span class="line">${l||" "}</span>`).join("");
   body.appendChild(pre);
 }
-function setVersion(v){
-  state.version = v;
-  const b = $("#verBadge");
-  b.className = "badge " + v;
-  b.textContent = v;
-}
+function setVersion(v){ state.version=v; const b=$("#verBadge"); b.className="badge "+v; b.textContent=v; }
 
-$("#copyBtn").onclick = ()=>{ navigator.clipboard.writeText(state.code||""); toast("Copied to clipboard"); };
-$("#saveBtn").onclick = save;
+$("#copyBtn").onclick=()=>{ navigator.clipboard.writeText(state.code||""); toast("Copied to clipboard"); };
+$("#saveBtn").onclick=save;
 
-// ---------- diff view ----------
-$("#diffBtn").onclick = ()=>{
-  if(!state.prevCode || !state.code) return;
-  renderDiff(state.prevCode, state.code);
-};
-function renderDiff(a, b){
-  // simple LCS-free line diff: good enough to spot adds/removes
+/* ============================ diff ============================ */
+$("#diffBtn").onclick=()=>{ if(state.prevCode && state.code) renderDiff(state.prevCode, state.code); };
+function renderDiff(a,b){
   const A=a.split("\n"), B=b.split("\n");
   const setB=new Set(B), setA=new Set(A);
   const body=$("#codeBody");
   let html=`<div class="diff-h"><span>diff — previous → current</span><span class="x" id="diffClose">✕ back to code</span></div><pre class="code">`;
-  // walk B showing additions, then list removals
-  B.forEach(line=>{
-    const cls = setA.has(line) ? "ctx" : "add";
-    html += `<span class="diffline ${cls}">${cls==="add"?"+ ":"  "}${escapeHtml(line)||" "}</span>`;
-  });
-  const removed = A.filter(l=>!setB.has(l));
-  if(removed.length){
-    html += `<span class="diffline ctx">  </span>`;
-    removed.forEach(line=> html += `<span class="diffline del">- ${escapeHtml(line)||" "}</span>`);
-  }
-  html += `</pre>`;
-  body.innerHTML = html;
-  $("#diffClose").onclick = ()=>renderCode(state.code);
+  B.forEach(line=>{ const cls=setA.has(line)?"ctx":"add"; html+=`<span class="diffline ${cls}">${cls==="add"?"+ ":"  "}${escapeHtml(line)||" "}</span>`; });
+  const removed=A.filter(l=>!setB.has(l));
+  if(removed.length){ html+=`<span class="diffline ctx">  </span>`; removed.forEach(line=>html+=`<span class="diffline del">- ${escapeHtml(line)||" "}</span>`); }
+  html+=`</pre>`; body.innerHTML=html;
+  $("#diffClose").onclick=()=>renderCode(state.code);
 }
 
-// ---------- review (feature #2): AI + static analysis of the whole tool ----------
-$("#reviewBtn").onclick = async ()=>{
+/* ============================ review ============================ */
+$("#reviewBtn").onclick=async ()=>{
   if(!state.code) return;
-  $("#reviewScrim").classList.add("on");
-  $("#reviewFix").style.display = "none";
-  $("#reviewBody").innerHTML = `<div class="review-loading">Analyzing the whole tool — static analysis + AI review…</div>`;
+  openScrim("reviewScrim");
+  $("#reviewFix").style.display="none";
+  $("#reviewBody").innerHTML=`<div class="review-loading">Analyzing the whole tool — static analysis + AI review…</div>`;
   let r;
-  try{
-    r = await fetch("/api/review",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({code:state.code})}).then(x=>x.json());
-  }catch(e){
-    $("#reviewBody").innerHTML = `<div class="review-issue high"><span class="ttl">Couldn't reach the local server</span><div class="det">Is TheDawg still running in your terminal?</div></div>`;
-    return;
-  }
+  try{ r=await fetch("/api/review",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:state.code})}).then(x=>x.json()); }
+  catch(e){ $("#reviewBody").innerHTML=`<div class="review-issue high"><span class="ttl">Couldn't reach the local server</span><div class="det">Is TheDawg still running in your terminal?</div></div>`; return; }
   renderReview(r);
 };
 function renderReview(r){
-  const body = $("#reviewBody");
-  if(r.error){
-    body.innerHTML = `<div class="review-issue medium"><span class="ttl">${escapeHtml(r.error)}</span></div>`;
-    return;
-  }
-  let html = "";
-  if(r.verdict) html += `<div class="review-verdict">${escapeHtml(r.verdict)}</div>`;
-  const issues = r.issues || [];
-  if(!issues.length){
-    html += `<div class="review-clean">✓ No issues found — this tool looks solid.</div>`;
-  }else{
-    issues.forEach(it=>{
-      const sev = (it.severity||"medium").toLowerCase();
-      const ln = it.line ? `<span class="ln">line ${escapeHtml(String(it.line))}</span>` : "";
-      html += `<div class="review-issue ${sev}">
-        <span class="sev">${escapeHtml(sev)}</span><span class="ttl">${escapeHtml(it.title||"issue")}</span>${ln}
-        <div class="det">${escapeHtml(it.detail||"")}</div></div>`;
-    });
-  }
-  if(r.strengths && r.strengths.length){
-    html += `<div class="review-strengths"><b>Strengths:</b><ul>` +
-      r.strengths.map(s=>`<li>${escapeHtml(s)}</li>`).join("") + `</ul></div>`;
-  }
-  html += `<div class="review-engine">analysis: ${escapeHtml(r.engine||"ast")}${r.model?" · model: "+escapeHtml(String(r.model).split("/").pop()):""}</div>`;
-  body.innerHTML = html;
-  // offer a one-click fix when real issues exist
-  const fixable = issues.filter(i=>(i.severity||"").toLowerCase()!=="low");
-  if(fixable.length){
-    const btn = $("#reviewFix");
-    btn.style.display = "inline-flex";
-    btn._issues = issues;
-    btn._verdict = r.verdict;
-  }
+  const body=$("#reviewBody");
+  if(r.error){ body.innerHTML=`<div class="review-issue medium"><span class="ttl">${escapeHtml(r.error)}</span></div>`; return; }
+  let html="";
+  if(r.verdict) html+=`<div class="review-verdict">${escapeHtml(r.verdict)}</div>`;
+  const issues=r.issues||[];
+  if(!issues.length){ html+=`<div class="review-clean">✓ No issues found — this tool looks solid.</div>`; }
+  else issues.forEach(it=>{
+    const sev=(it.severity||"medium").toLowerCase();
+    const ln=it.line?`<span class="ln">line ${escapeHtml(String(it.line))}</span>`:"";
+    html+=`<div class="review-issue ${sev}"><span class="sev">${escapeHtml(sev)}</span><span class="ttl">${escapeHtml(it.title||"issue")}</span>${ln}<div class="det">${escapeHtml(it.detail||"")}</div></div>`;
+  });
+  if(r.strengths && r.strengths.length) html+=`<div class="review-strengths"><b>Strengths:</b><ul>`+r.strengths.map(s=>`<li>${escapeHtml(s)}</li>`).join("")+`</ul></div>`;
+  html+=`<div class="review-engine">analysis: ${escapeHtml(r.engine||"ast")}${r.model?" · model: "+escapeHtml(String(r.model).split("/").pop()):""}</div>`;
+  body.innerHTML=html;
+  const fixable=issues.filter(i=>(i.severity||"").toLowerCase()!=="low");
+  if(fixable.length){ const btn=$("#reviewFix"); btn.style.display="inline-flex"; btn._issues=issues; btn._verdict=r.verdict; }
 }
-$("#reviewClose").onclick = ()=>$("#reviewScrim").classList.remove("on");
-$("#reviewFix").onclick = async ()=>{
-  const btn = $("#reviewFix");
-  const issues = btn._issues || [];
-  $("#reviewScrim").classList.remove("on");
-  // turn the review into a concrete fix request and send it through the normal build path
-  const list = issues.map(i=>`- [${(i.severity||"").toUpperCase()}] ${i.title}: ${i.detail}${i.line?` (line ${i.line})`:""}`).join("\n");
-  const msg = `Please fix these issues found in a code review of the current tool, and return the FULL corrected script:\n\n${list}`;
-  send(msg);
+$("#reviewClose").onclick=()=>closeScrim("reviewScrim");
+$("#reviewFix").onclick=async ()=>{
+  const issues=$("#reviewFix")._issues||[];
+  closeScrim("reviewScrim");
+  const list=issues.map(i=>`- [${(i.severity||"").toUpperCase()}] ${i.title}: ${i.detail}${i.line?` (line ${i.line})`:""}`).join("\n");
+  send(`Please fix these issues found in a code review of the current tool, and return the FULL corrected script:\n\n${list}`);
 };
 
-// ---------- editable code pane ----------
-$("#editBtn").onclick = ()=>{
+/* ============================ edit ============================ */
+$("#editBtn").onclick=()=>{
   if(!state.code) return;
-  const body=$("#codeBody");
-  body.innerHTML = `<textarea class="codeedit" id="codeEdit" spellcheck="false"></textarea>`;
-  $("#codeEdit").value = state.code;
-  $("#editBar").style.display = "flex";
+  $("#codeBody").innerHTML=`<textarea class="codeedit" id="codeEdit" spellcheck="false"></textarea>`;
+  $("#codeEdit").value=state.code;
+  $("#editBar").style.display="flex";
   $("#codeEdit").focus();
 };
-$("#editCancel").onclick = ()=>{ $("#editBar").style.display="none"; renderCode(state.code); };
-$("#editSave").onclick = ()=>{
-  const v = $("#codeEdit").value;
-  state.prevCode = state.code; state.code = v;
-  $("#editBar").style.display="none";
-  renderCode(v);
-  $("#diffBtn").disabled = false;
-  // record the manual edit in the conversation so the model stays in sync
+$("#editCancel").onclick=()=>{ $("#editBar").style.display="none"; renderCode(state.code); };
+$("#editSave").onclick=()=>{
+  const v=$("#codeEdit").value;
+  state.prevCode=state.code; state.code=v;
+  $("#editBar").style.display="none"; renderCode(v); $("#diffBtn").disabled=false;
   state.messages.push({role:"assistant", content:"```python\n"+v+"\n```"});
   state.messages.push({role:"user", content:"(I manually edited the code above — treat that as the current version.)"});
   toast("Edits applied — model is in sync");
 };
 
-// ---------- deps detect & install (pip-only, includes GUI toolkit) ----------
-// On TheDawg every dep — including the GUI toolkit — goes through pip into the
-// managed venv. detect_deps already rolls the toolkit's pip package into d.pip,
-// so one call covers everything.
-$("#depsBtn").onclick = async ()=>{
+/* ============================ deps ============================ */
+$("#depsBtn").onclick=async ()=>{
   if(!state.code) return;
   let d;
-  try{ d = await fetch("/api/deps",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({code:state.code})}).then(r=>r.json()); }
+  try{ d=await fetch("/api/deps",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:state.code})}).then(r=>r.json()); }
   catch(e){ toast("Couldn't reach the local server", true); return; }
-  const pip = d.pip || [];
-  const tk = d.toolkit;
+  const pip=d.pip||[], tk=d.toolkit;
   if(!pip.length){
-    if(tk && tk.module === "tkinter"){
-      addMsg("smith", "This tool uses Tkinter, which is part of Python's standard library — no pip install needed. On most Linux distros it's also pre-installed; if not, on Debian/Ubuntu/Mint you can run:\n\n```\nsudo apt install python3-tk\n```");
-    } else {
-      toast("Pure stdlib — nothing to install");
-    }
+    if(tk && tk.module==="tkinter") addMsg("smith","This tool uses Tkinter, part of Python's standard library — no pip install needed. If it's missing on Debian/Ubuntu/Mint:\n\n```\nsudo apt install python3-tk\n```");
+    else toast("Pure stdlib — nothing to install");
     return;
   }
-  // confirm-and-install everything (toolkit pip pkg + any other third-party imports)
-  const label = tk ? `${tk.label} toolkit + ` : "";
+  const label=tk?`${tk.label} toolkit + `:"";
   if(!confirm(`Install ${label}deps into TheDawg's managed venv?\n\n  ${pip.join("\n  ")}`)) return;
-  toast("Installing " + pip.join(", ") + "…");
+  toast("Installing "+pip.join(", ")+"…");
   let r;
-  try{ r = await fetch("/api/deps/install",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({pip})}).then(r=>r.json()); }
+  try{ r=await fetch("/api/deps/install",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pip})}).then(r=>r.json()); }
   catch(e){ toast("pip install couldn't reach server", true); return; }
-  if(r.ok){
-    toast("Installed: "+pip.join(", "));
-    addMsg("smith","Installed into the managed venv: "+pip.join(", ")+". Launches will use it automatically.");
-  } else {
-    addMsg("smith","⚠ pip install had trouble:\n"+(r.log||"unknown"));
-  }
+  if(r.ok){ toast("Installed: "+pip.join(", ")); addMsg("smith","Installed into the managed venv: "+pip.join(", ")+". Launches will use it automatically."); }
+  else addMsg("smith","⚠ pip install had trouble:\n"+(r.log||"unknown"));
 };
 
-// ---------- library ----------
-// Save the tool AT ITS CURRENT STATE — code, the whole build conversation, the
-// version badge, and the test args — so reopening it restores exactly this point,
-// the way reopening a chat does.
-$("#libSaveBtn").onclick = async ()=>{
+/* ============================ library / sessions ============================ */
+$("#libSaveBtn").onclick=async ()=>{
   if(!state.code){ toast("Nothing to save yet", true); return; }
   let r;
-  try{
-    r = await fetch("/api/library/save",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({name:state.name, code:state.code, messages:state.messages,
-                           version:state.version, args:$("#args").value.trim(),
-                           sessionId:state.sessionId})}).then(r=>r.json());
-  }catch(e){ toast("Couldn't reach the local server", true); return; }
+  try{ r=await fetch("/api/library/save",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({name:state.name, code:state.code, messages:state.messages, version:state.version, args:$("#args").value.trim(), sessionId:state.sessionId})}).then(r=>r.json()); }
+  catch(e){ toast("Couldn't reach the local server", true); return; }
   if(r && r.error){ toast("⚠ "+r.error, true); return; }
   toast(`Saved "${state.name}" to library — its state is banked`);
 };
-$("#libBtn").onclick = ()=>openPanel(state._panelTab||"sessions");
-$("#libClose").onclick = ()=>$("#libPanel").classList.remove("on");
-$("#tabSessions").onclick = ()=>openPanel("sessions");
-$("#tabLibrary").onclick = ()=>openPanel("library");
-
+$("#libBtn").onclick=()=>openPanel(state._panelTab||"sessions");
+$("#libClose").onclick=()=>$("#libPanel").classList.remove("on");
+$("#tabSessions").onclick=()=>openPanel("sessions");
+$("#tabLibrary").onclick=()=>openPanel("library");
 async function openPanel(tab){
-  state._panelTab = tab;
+  state._panelTab=tab;
   $("#libPanel").classList.add("on");
   $("#tabSessions").classList.toggle("on", tab==="sessions");
   $("#tabLibrary").classList.toggle("on", tab==="library");
   if(tab==="sessions") renderSessions(); else renderLibrary();
 }
-
 async function renderSessions(){
   let r;
-  try{ r = await fetch("/api/sessions").then(r=>r.json()); }
-  catch(e){ $("#libBody").innerHTML='<div class="lib-empty">Server offline.</div>'; return; }
-  const ss = r.sessions||[];
+  try{ r=await fetch("/api/sessions").then(r=>r.json()); }catch(e){ $("#libBody").innerHTML='<div class="lib-empty">Server offline.</div>'; return; }
+  const ss=r.sessions||[];
   if(!ss.length){ $("#libBody").innerHTML='<div class="lib-empty">No tools in progress.<br>Start building and it auto-saves here.</div>'; return; }
-  $("#libBody").innerHTML = ss.map(s=>`
+  $("#libBody").innerHTML=ss.map(s=>`
     <div class="lib-item" data-id="${s.id}">
       <div class="nm">${escapeHtml(s.name)}${s.toolkit?` <span class="tk">${escapeHtml(s.toolkit)}</span>`:""}</div>
       <div class="meta">${s.turns} turns · ${s.hasCode?"has code":"no code yet"} · ${escapeHtml(s.updated||"")}</div>
@@ -1443,31 +1104,28 @@ async function renderSessions(){
 }
 async function resumeSession(id){
   let r;
-  try{ r = await fetch("/api/session/load",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})}).then(r=>r.json()); }
+  try{ r=await fetch("/api/session/load",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})}).then(r=>r.json()); }
   catch(e){ toast("Couldn't load", true); return; }
   if(r.error){ toast(r.error, true); return; }
-  const s = r.session;
-  state.messages = s.messages||[]; state.name = s.name||s.id; state.sessionId = s.id;
-  state.intakeDone = true; state.prevCode = null; state.attachments = []; renderAttachments();
+  const s=r.session;
+  state.messages=s.messages||[]; state.name=s.name||s.id; state.sessionId=s.id;
+  state.intakeDone=true; state.prevCode=null; state.attachments=[]; renderAttachments();
   $("#thread").innerHTML="";
-  // replay the conversation so it looks like this chat
   (s.messages||[]).forEach(m=>{
     if(m.role==="user") addMsg("you", m.content.replace(/```[\s\S]*?```/g,"[code]"));
     else if(m.role==="assistant"){ const {prose}=splitReply(m.content); if(prose) addMsg("smith", prose); }
   });
   if(s.code){ loadCode(s.code); setVersion(s.version||"testing"); }
-  $("#args").value = s.args || "";
+  $("#args").value=s.args||"";
   $("#libPanel").classList.remove("on");
   toast(`Resumed "${s.name}"`);
 }
-
 async function renderLibrary(){
   let r;
-  try{ r = await fetch("/api/library").then(r=>r.json()); }
-  catch(e){ $("#libBody").innerHTML='<div class="lib-empty">Server offline.</div>'; return; }
-  const tools = r.tools||[];
+  try{ r=await fetch("/api/library").then(r=>r.json()); }catch(e){ $("#libBody").innerHTML='<div class="lib-empty">Server offline.</div>'; return; }
+  const tools=r.tools||[];
   if(!tools.length){ $("#libBody").innerHTML='<div class="lib-empty">No saved tools yet.<br>Build one, then ★ library.</div>'; return; }
-  $("#libBody").innerHTML = tools.map(t=>`
+  $("#libBody").innerHTML=tools.map(t=>`
     <div class="lib-item" data-id="${t.id}">
       <div class="nm">${escapeHtml(t.name)}${t.toolkit?` <span class="tk">${escapeHtml(t.toolkit)}</span>`:""}</div>
       <div class="meta">${t.lines} lines · ${escapeHtml(t.version||"testing")} · saved ${escapeHtml(t.saved||"")}</div>
@@ -1483,443 +1141,309 @@ async function renderLibrary(){
 }
 async function loadFromLibrary(id){
   let r;
-  try{ r = await fetch("/api/library/load",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})}).then(r=>r.json()); }
+  try{ r=await fetch("/api/library/load",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})}).then(r=>r.json()); }
   catch(e){ toast("Couldn't load", true); return; }
   if(r.error){ toast("Couldn't load: "+r.error, true); return; }
-  const tool = r.tool;
-  // reset to a clean slate, then hydrate from the saved tool at its exact state
-  state.messages = tool.messages || [];
-  state.name = tool.name || tool.id; state.intakeDone = true; state.prevCode = null;
-  state.sessionId = null; state.attachments = []; renderAttachments();
+  const tool=r.tool;
+  state.messages=tool.messages||[]; state.name=tool.name||tool.id; state.intakeDone=true; state.prevCode=null;
+  state.sessionId=null; state.attachments=[]; renderAttachments();
   $("#thread").innerHTML="";
-  // replay the build conversation so it reads like the chat that made it
   (tool.messages||[]).forEach(m=>{
     if(m.role==="user") addMsg("you", m.content.replace(/```[\s\S]*?```/g,"[code]"));
     else if(m.role==="assistant"){ const {prose}=splitReply(m.content); if(prose) addMsg("smith", prose); }
   });
   addMsg("smith", `Loaded "${tool.name}" from the library at its saved ${tool.version||"testing"} state — conversation, code and args restored. Keep iterating where you left off.`);
-  loadCode(tool.code);
-  setVersion(tool.version||"testing");
-  $("#args").value = tool.args || "";
+  loadCode(tool.code); setVersion(tool.version||"testing");
+  $("#args").value=tool.args||"";
   $("#libPanel").classList.remove("on");
 }
-$("#releaseBtn").onclick = ()=>{ if(state.code) openGithub(); };
 
-// ---------- ⬛ build (PyInstaller) ----------
-// Packs the current testing/release script into a single-file executable for
-// THIS machine's OS. Asks once about console vs windowed (defaults: windowed for
-// GUI tools, console if no toolkit is detected). The work is heavy — first
-// run installs PyInstaller + the tool's deps into the managed venv, then runs
-// the build — so we show progress in chat and let it stream until done.
-$("#buildBtn").onclick = async ()=>{
-  if(!state.code) return;
-  // detect deps so we can show the user what's about to be installed
-  let d = {pip:[], toolkit:null};
-  try{ d = await fetch("/api/deps",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({code:state.code})}).then(r=>r.json()); }catch(_){ /* non-fatal */ }
-  const hasToolkit = !!d.toolkit;
-  const wantConsole = hasToolkit ? false :
-    confirm("This tool doesn't look like a GUI — build a console executable?\n\n(OK = console, Cancel = windowed)");
-  const note = (d.pip && d.pip.length)
-    ? `\n\nWill pip-install into TheDawg's managed venv first:\n  ${d.pip.join("\n  ")}\n`
-    : "";
-  if(!confirm(`Build a single-file executable for THIS OS with PyInstaller?${note}\n\nThis can take a couple of minutes the first time.`)) return;
-
-  const btn = $("#buildBtn");
-  const orig = btn.textContent; btn.disabled = true; btn.textContent = "⬛ building…";
-  addMsg("smith", `🐶 Packing **${state.name}** into a standalone executable with PyInstaller — first run installs the toolchain into the managed venv, so give it a minute.`);
-  toast("Building executable — this may take a minute…");
-
-  let r;
-  try{
-    r = await fetch("/api/build",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({code:state.code, name:state.name, console:wantConsole})}).then(r=>r.json());
-  }catch(e){
-    btn.disabled=false; btn.textContent=orig;
-    addMsg("smith","⚠ The build request couldn't reach the local server."); return;
-  }
-  btn.disabled=false; btn.textContent=orig;
-
-  if(r.ok){
-    playSound("build");
-    toast(`Built ${r.target} (${r.size_mb} MB)`);
-    addMsg("smith",
-      `✅ Built a **${r.target}** — ${r.size_mb} MB.\n\n` +
-      `Path: \`${r.path}\`\n\nIt's self-contained: copy that single file to another Linux machine (same architecture) and run it — no Python needed there.`);
-  } else {
-    addMsg("smith", "⚠ Build failed:\n\n```\n" + (r.log || "no log") + "\n```");
-  }
-};
-
+/* ============================ release / github ============================ */
+$("#releaseBtn").onclick=()=>{ if(state.code) openGithub(); };
 function openGithub(){
-  // prefill username if we've seen it before this session
-  $("#ghUser").value = state.ghUser || "";
-  $("#ghRepo").value = state.name || "tool";
-  $("#ghBranch").value = "main";
-  $("#ghHolder").value = state.ghHolder || "";
-  $("#ghScrim").classList.add("on");
-  $("#ghStage1").style.display = "block";
-  $("#ghStage2").style.display = "none";
+  $("#ghUser").value=state.ghUser||"";
+  $("#ghRepo").value=state.name||"tool";
+  $("#ghBranch").value="main";
+  $("#ghHolder").value=state.ghHolder||"";
+  openScrim("ghScrim");
+  $("#ghStage1").style.display="block";
+  $("#ghStage2").style.display="none";
   $("#ghUser").focus();
 }
-$("#ghCancel").onclick = ()=>$("#ghScrim").classList.remove("on");
-
-$("#ghGenerate").onclick = async ()=>{
-  const details = {
-    username: $("#ghUser").value.trim(),
-    repo: ($("#ghRepo").value.trim() || state.name),
-    branch: $("#ghBranch").value.trim() || "main",
-    license: $("#ghLicense").value,
-    holder: $("#ghHolder").value.trim() || $("#ghUser").value.trim(),
+$("#ghCancel").onclick=()=>closeScrim("ghScrim");
+$("#ghGenerate").onclick=async ()=>{
+  const details={
+    username:$("#ghUser").value.trim(),
+    repo:($("#ghRepo").value.trim()||state.name),
+    branch:$("#ghBranch").value.trim()||"main",
+    license:$("#ghLicense").value,
+    holder:$("#ghHolder").value.trim()||$("#ghUser").value.trim(),
   };
   if(!details.username){ toast("GitHub username is required", true); return; }
-  state.ghUser = details.username; state.ghHolder = details.holder;
-
-  // step 1: polish the code into a release version (system prompt handles this)
-  $("#ghGenerate").disabled = true; $("#ghGenerate").textContent = "polishing code…";
-  state.pendingRelease = true;
-  // ask the model for the release version inline (not via send, to keep the modal flow)
+  state.ghUser=details.username; state.ghHolder=details.holder;
+  $("#ghGenerate").disabled=true; $("#ghGenerate").textContent="polishing code…";
+  state.pendingRelease=true;
   let rel;
   try{
-    const msgs = [...state.messages, {role:"user", content:
-      "Produce the RELEASE version: polished, top docstring with usage, clean argparse CLI with --help, robust error handling, sensible exit codes, helpful comments, no dead code. Return the full script."}];
-    rel = await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({messages:msgs, provider:$("#providerPick").value})}).then(r=>r.json());
-  }catch(e){ rel = {error:"server"}; }
+    const msgs=[...state.messages, {role:"user", content:"Produce the RELEASE version: polished, top docstring with usage, clean argparse CLI with --help, robust error handling, sensible exit codes, helpful comments, no dead code. Return the full script."}];
+    rel=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({messages:msgs, provider:$("#providerPick").value})}).then(r=>r.json());
+  }catch(e){ rel={error:"server"}; }
   if(rel.error){ toast("⚠ "+rel.error, true); resetGhBtn(); return; }
-  const {code:relCode} = splitReply(rel.reply);
+  const {code:relCode}=splitReply(rel.reply);
   if(relCode){ loadCode(relCode); setVersion("release"); state.messages.push({role:"assistant",content:rel.reply}); }
-  const finalCode = relCode || state.code;
-
-  // step 2: generate the repo files
-  $("#ghGenerate").textContent = "assembling repo…";
+  const finalCode=relCode||state.code;
+  $("#ghGenerate").textContent="assembling repo…";
   let gh;
-  try{
-    gh = await fetch("/api/github",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({code:finalCode, details, provider:$("#providerPick").value})}).then(r=>r.json());
-  }catch(e){ gh = {error:"server"}; }
+  try{ gh=await fetch("/api/github",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:finalCode, details, provider:$("#providerPick").value})}).then(r=>r.json()); }
+  catch(e){ gh={error:"server"}; }
   if(gh.error){ toast("⚠ "+gh.error, true); resetGhBtn(); return; }
-
-  // step 3: write to disk
   let written;
-  try{
-    written = await fetch("/api/github/write",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({code:finalCode, name:details.repo, github:gh.github, details})}).then(r=>r.json());
-  }catch(e){ written = {error:"server"}; }
+  try{ written=await fetch("/api/github/write",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:finalCode, name:details.repo, github:gh.github, details})}).then(r=>r.json()); }
+  catch(e){ written={error:"server"}; }
   resetGhBtn();
   if(written.error){ toast("⚠ "+written.error, true); return; }
   showGhResult(written);
 };
 function resetGhBtn(){ $("#ghGenerate").disabled=false; $("#ghGenerate").textContent="generate repo ▸"; }
-
 function showGhResult(w){
-  $("#ghStage1").style.display = "none";
-  $("#ghStage2").style.display = "block";
-  $("#ghFiles").innerHTML = (w.files||[]).map(f=>`<span class="ghfile">${escapeHtml(f)}</span>`).join("");
-  $("#ghInstall").textContent    = w.install_line_posix || w.install_line || "";
-  $("#ghPush").textContent = (w.push||[]).join("\n");
-  $("#ghPath").textContent = w.path || "";
-  addMsg("smith", `GitHub repo assembled at ${w.path}. The README has the one-line Linux installer, and the push commands are in the dialog — HTTPS remote, as you wanted.`,
-         `${state.name} · release + repo files`);
+  $("#ghStage1").style.display="none"; $("#ghStage2").style.display="block";
+  $("#ghFiles").innerHTML=(w.files||[]).map(f=>`<span class="ghfile">${escapeHtml(f)}</span>`).join("");
+  $("#ghInstall").textContent=w.install_line_posix||w.install_line||"";
+  $("#ghPush").textContent=(w.push||[]).join("\n");
+  $("#ghPath").textContent=w.path||"";
+  addMsg("smith", `GitHub repo assembled at ${w.path}. The README has the one-line Linux installer, and the push commands are in the dialog — HTTPS remote, as you wanted.`, `${state.name} · release + repo files`);
 }
-$("#ghCopyInstall").onclick = ()=>{ navigator.clipboard.writeText($("#ghInstall").textContent); toast("Linux install line copied"); };
-$("#ghCopyPush").onclick = ()=>{ navigator.clipboard.writeText($("#ghPush").textContent); toast("Push commands copied"); };
-$("#ghDone").onclick = ()=>$("#ghScrim").classList.remove("on");
+$("#ghCopyInstall").onclick=()=>{ navigator.clipboard.writeText($("#ghInstall").textContent); toast("Linux install line copied"); };
+$("#ghCopyPush").onclick=()=>{ navigator.clipboard.writeText($("#ghPush").textContent); toast("Push commands copied"); };
+$("#ghDone").onclick=()=>closeScrim("ghScrim");
 
+/* ============================ build (PyInstaller) ============================ */
+$("#buildBtn").onclick=async ()=>{
+  if(!state.code) return;
+  let d={pip:[], toolkit:null};
+  try{ d=await fetch("/api/deps",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:state.code})}).then(r=>r.json()); }catch(_){}
+  const hasToolkit=!!d.toolkit;
+  const wantConsole=hasToolkit?false:confirm("This tool doesn't look like a GUI — build a console executable?\n\n(OK = console, Cancel = windowed)");
+  const note=(d.pip && d.pip.length)?`\n\nWill pip-install into TheDawg's managed venv first:\n  ${d.pip.join("\n  ")}\n`:"";
+  if(!confirm(`Build a single-file executable for THIS OS with PyInstaller?${note}\n\nThis can take a couple of minutes the first time.`)) return;
+  const btn=$("#buildBtn"); const orig=btn.textContent; btn.disabled=true; btn.textContent="⬛ building…";
+  addMsg("smith", `🐶 Packing ${state.name} into a standalone executable with PyInstaller — first run installs the toolchain into the managed venv, so give it a minute.`);
+  toast("Building executable — this may take a minute…");
+  let r;
+  try{ r=await fetch("/api/build",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:state.code, name:state.name, console:wantConsole})}).then(r=>r.json()); }
+  catch(e){ btn.disabled=false; btn.textContent=orig; addMsg("smith","⚠ The build request couldn't reach the local server."); return; }
+  btn.disabled=false; btn.textContent=orig;
+  if(r.ok){
+    playSound("build"); toast(`Built ${r.target} (${r.size_mb} MB)`);
+    addMsg("smith", `✅ Built a ${r.target} — ${r.size_mb} MB.\n\nPath: ${r.path}\n\nIt's self-contained: copy that single file to another Linux machine (same architecture) and run it — no Python needed there.`);
+  } else addMsg("smith", "⚠ Build failed:\n\n```\n"+(r.log||"no log")+"\n```");
+};
+
+/* ============================ save ============================ */
 async function save(){
   if(!state.code) return;
   let res;
-  try{
-    res = await fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({code:state.code, name:state.name, kind:state.version})}).then(r=>r.json());
-  }catch(e){ toast("Couldn't reach the local server", true); return; }
+  try{ res=await fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:state.code, name:state.name, kind:state.version})}).then(r=>r.json()); }
+  catch(e){ toast("Couldn't reach the local server", true); return; }
   if(res.error){ toast("⚠ "+res.error, true); return; }
-  toast("Saved → " + res.path);
+  toast("Saved → "+res.path);
 }
 
-// ---------- run / launch ----------
-let currentPid = null;     // pid of the GUI we launched, if it's still open
-$("#runBtn").onclick = ()=>run(false);
-$("#stopBtn").onclick = stopRunning;
-
-function showStop(pid){
-  currentPid = pid || null;
-  $("#stopBtn").style.display = pid ? "inline-flex" : "none";
-}
-
+/* ============================ run / launch ============================ */
+let currentPid=null;
+$("#runBtn").onclick=()=>run(false);
+$("#stopBtn").onclick=stopRunning;
+function showStop(pid){ currentPid=pid||null; $("#stopBtn").style.display=pid?"inline-flex":"none"; }
 async function stopRunning(){
   if(!currentPid){ showStop(null); return; }
-  try{
-    await fetch("/api/stop",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({pid:currentPid})});
-    toast("Closed the running window");
-  }catch(e){ toast("Couldn't reach the local server", true); }
+  try{ await fetch("/api/stop",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pid:currentPid})}); toast("Closed the running window"); }
+  catch(e){ toast("Couldn't reach the local server", true); }
   showStop(null);
 }
-
 async function run(confirmed){
   if(!state.code) return;
-  const args = $("#args").value.trim();
-  const con = $("#console");
-  const cmdLine = `$ python3 ${esc(state.name)}.py ${esc(args)}`;
-  con.innerHTML = `<span class="meta">${cmdLine}</span>\n<span class="placeholder">launching…</span>`;
+  const args=$("#args").value.trim();
+  const con=$("#console");
+  const cmdLine=`$ python3 ${esc(state.name)}.py ${esc(args)}`;
+  con.innerHTML=`<span class="meta">${cmdLine}</span>\n<span class="placeholder">launching…</span>`;
   let res;
-  try{
-    res = await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({code:state.code, args, confirm:confirmed, name:state.name})}).then(r=>r.json());
-  }catch(e){
-    con.innerHTML = `<span class="meta">${cmdLine}</span>\n\n<span class="bad">Couldn't reach the local TheDawg server. Is it still running in your terminal?</span>`;
-    return;
-  }
-
-  if(res.needsConfirm){
-    $("#dangerPatts").textContent = res.patterns.join("   ·   ");
-    $("#dangerScrim").classList.add("on");
-    con.innerHTML = `<span class="placeholder">Blocked pending your confirmation.</span>`;
-    return;
-  }
-  if(res.error){
-    con.innerHTML = `<span class="meta">${cmdLine}</span>\n\n<span class="bad">${esc(res.error)}</span>`;
-    return;
-  }
-
-  // ----- GUI launch result -----
+  try{ res=await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:state.code, args, confirm:confirmed, name:state.name})}).then(r=>r.json()); }
+  catch(e){ con.innerHTML=`<span class="meta">${cmdLine}</span>\n\n<span class="bad">Couldn't reach the local TheDawg server. Is it still running in your terminal?</span>`; return; }
+  if(res.needsConfirm){ $("#dangerPatts").textContent=res.patterns.join("   ·   "); openScrim("dangerScrim"); con.innerHTML=`<span class="placeholder">Blocked pending your confirmation.</span>`; return; }
+  if(res.error){ con.innerHTML=`<span class="meta">${cmdLine}</span>\n\n<span class="bad">${esc(res.error)}</span>`; return; }
   if(res.gui){
-    let html = `<span class="meta">${cmdLine}</span>\n\n`;
-    if(res.launched){
-      // window is open on the user's desktop
-      showStop(res.pid);
-      html += `<span class="ok">✓ window launched · ${res.seconds}s</span>\n`;
-      html += `<span class="out">${esc(res.note||"GUI is open on your desktop.")}</span>`;
-      if(res.stderr) html += `\n<span class="meta">startup notes:</span>\n<span class="meta">${esc(res.stderr)}</span>`;
-    }else if(res.exit===0){
-      showStop(null);
-      html += `<span class="ok">✓ ran and exited cleanly · ${res.seconds}s</span>`;
-      if(res.stderr) html += `\n<span class="meta">${esc(res.stderr)}</span>`;
-    }else{
-      // died on startup — show the diagnosed error (missing toolkit / no display / crash)
-      showStop(null);
-      html += `<span class="bad">✗ the GUI failed to start · exit ${res.exit} · ${res.seconds}s</span>\n\n`;
-      html += `<span class="bad">${esc(res.stderr||"")}</span>`;
-      html += `\n<span class="meta">— double-click here, or paste this on the left, and I'll fix it</span>`;
-      state.lastError = res.stderr;
-    }
-    con.innerHTML = html;
-    con.scrollTop = con.scrollHeight;
-    return;
+    let html=`<span class="meta">${cmdLine}</span>\n\n`;
+    if(res.launched){ showStop(res.pid); html+=`<span class="ok">✓ window launched · ${res.seconds}s</span>\n`; html+=`<span class="out">${esc(res.note||"GUI is open on your desktop.")}</span>`; if(res.stderr) html+=`\n<span class="meta">startup notes:</span>\n<span class="meta">${esc(res.stderr)}</span>`; }
+    else if(res.exit===0){ showStop(null); html+=`<span class="ok">✓ ran and exited cleanly · ${res.seconds}s</span>`; if(res.stderr) html+=`\n<span class="meta">${esc(res.stderr)}</span>`; }
+    else{ showStop(null); html+=`<span class="bad">✗ the GUI failed to start · exit ${res.exit} · ${res.seconds}s</span>\n\n`; html+=`<span class="bad">${esc(res.stderr||"")}</span>`; html+=`\n<span class="meta">— double-click here, or paste this on the left, and I'll fix it</span>`; state.lastError=res.stderr; }
+    con.innerHTML=html; con.scrollTop=con.scrollHeight; return;
   }
-
-  // ----- non-GUI (captured output) -----
   showStop(null);
-  let html = `<span class="meta">${cmdLine}</span>\n\n`;
-  if(res.stdout) html += `<span class="out">${esc(res.stdout)}</span>`;
-  if(res.stderr) html += `<span class="bad">${esc(res.stderr)}</span>`;
-  if(!res.stdout && !res.stderr) html += `<span class="placeholder">(no output)</span>`;
-  html += `\n<span class="meta">────────────</span>\n`;
-  html += res.exit===0
-      ? `<span class="ok">✓ exit 0 · ${res.seconds}s · clean</span>`
-      : `<span class="bad">✗ exit ${res.exit} · ${res.seconds}s</span>  <span class="meta">— paste the error to me on the left and I'll fix it</span>`;
-  con.innerHTML = html;
-  con.scrollTop = con.scrollHeight;
-
-  if(res.exit!==0 && res.stderr){ state.lastError = res.stderr; }
+  let html=`<span class="meta">${cmdLine}</span>\n\n`;
+  if(res.stdout) html+=`<span class="out">${esc(res.stdout)}</span>`;
+  if(res.stderr) html+=`<span class="bad">${esc(res.stderr)}</span>`;
+  if(!res.stdout && !res.stderr) html+=`<span class="placeholder">(no output)</span>`;
+  html+=`\n<span class="meta">────────────</span>\n`;
+  html+=res.exit===0?`<span class="ok">✓ exit 0 · ${res.seconds}s · clean</span>`:`<span class="bad">✗ exit ${res.exit} · ${res.seconds}s</span>  <span class="meta">— paste the error to me on the left and I'll fix it</span>`;
+  con.innerHTML=html; con.scrollTop=con.scrollHeight;
+  if(res.exit!==0 && res.stderr) state.lastError=res.stderr;
 }
-$("#dangerCancel").onclick = ()=>$("#dangerScrim").classList.remove("on");
-$("#dangerConfirm").onclick = ()=>{ $("#dangerScrim").classList.remove("on"); run(true); };
+$("#dangerCancel").onclick=()=>closeScrim("dangerScrim");
+$("#dangerConfirm").onclick=()=>{ closeScrim("dangerScrim"); run(true); };
 
-// ---------- send log to AI & fix (the #1 feature) ----------
-$("#fixLogBtn").onclick = async ()=>{
+/* ============================ send log to AI & fix ============================ */
+$("#fixLogBtn").onclick=async ()=>{
   if(!state.code || state.busy) return;
-  state.busy = true; addThinking();
+  state.busy=true; addThinking();
   let res;
-  try{
-    res = await fetch("/api/fixlog",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({code:state.code, messages:state.messages, provider:$("#providerPick").value})}).then(r=>r.json());
-  }catch(e){ res = {error:"Couldn't reach the local server."}; }
+  try{ res=await fetch("/api/fixlog",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:state.code, messages:state.messages, provider:$("#providerPick").value})}).then(r=>r.json()); }
+  catch(e){ res={error:"Couldn't reach the local server."}; }
   clearThinking(); state.busy=false;
   applyModelResult(res, "Sent the run log to the AI to diagnose.");
 };
 
-// ---------- auto-polish loop ----------
-let polishing = false;
-$("#polishBtn").onclick = async ()=>{
-  if(polishing){ polishing=false; return; }   // toggle off -> stop after current round
+/* ============================ auto-polish loop ============================ */
+let polishing=false;
+$("#polishBtn").onclick=async ()=>{
+  if(polishing){ polishing=false; return; }
   if(!state.code) return;
-  polishing = true;
-  const btn = $("#polishBtn");
-  btn.classList.add("running"); btn.textContent = "■ stop polishing";
-  let round = 0;
+  polishing=true;
+  const btn=$("#polishBtn"); btn.classList.add("running"); btn.textContent="■ stop polishing";
+  let round=0;
   while(polishing){
     round++;
-    $("#polishStatus").textContent = `polishing — round ${round}…`;
+    $("#polishStatus").textContent=`polishing — round ${round}…`;
     let res;
-    try{
-      res = await fetch("/api/polish",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({code:state.code, messages:state.messages, provider:$("#providerPick").value})}).then(r=>r.json());
-    }catch(e){ res = {error:"Couldn't reach the local server."}; }
+    try{ res=await fetch("/api/polish",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:state.code, messages:state.messages, provider:$("#providerPick").value})}).then(r=>r.json()); }
+    catch(e){ res={error:"Couldn't reach the local server."}; }
     if(res.error){ addMsg("smith","⚠ "+res.error); break; }
-    const {prose, code} = splitReply(res.reply);
-    if(!code){ $("#polishStatus").textContent = "stopped — model returned no code"; break; }
+    const {prose, code}=splitReply(res.reply);
+    if(!code){ $("#polishStatus").textContent="stopped — model returned no code"; break; }
     loadCode(code); setVersion("testing");
     state.messages.push({role:"assistant", content:res.reply});
-    addMsg("smith", prose || "Polished a round.", `${state.name}.py · polish round ${round}`);
-    // auto-run after each polish so the next round sees fresh output
+    addMsg("smith", prose||"Polished a round.", `${state.name}.py · polish round ${round}`);
     await run(true);
-    if(round >= 6){ $("#polishStatus").textContent = "stopped — hit 6-round safety cap"; break; }
+    if(round>=6){ $("#polishStatus").textContent="stopped — hit 6-round safety cap"; break; }
   }
-  polishing = false;
-  btn.classList.remove("running"); btn.textContent = "✦ auto-polish loop";
-  if(!$("#polishStatus").textContent.startsWith("stopped")) $("#polishStatus").textContent = "done";
+  polishing=false;
+  btn.classList.remove("running"); btn.textContent="✦ auto-polish loop";
+  if(!$("#polishStatus").textContent.startsWith("stopped")) $("#polishStatus").textContent="done";
   setTimeout(()=>$("#polishStatus").textContent="", 4000);
 };
 
-// ---------- download / clear log ----------
-$("#dlLogBtn").onclick = ()=>{ window.open("/api/log.txt","_blank"); };
-$("#clearLogBtn").onclick = async ()=>{
-  try{
-    await fetch("/api/log.clear",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
-    toast("Run log cleared");
-  }catch(e){ toast("Couldn't reach the local server", true); }
+/* ============================ log download / clear ============================ */
+$("#dlLogBtn").onclick=()=>{ window.open("/api/log.txt","_blank"); };
+$("#clearLogBtn").onclick=async ()=>{
+  try{ await fetch("/api/log.clear",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}); toast("Run log cleared"); }
+  catch(e){ toast("Couldn't reach the local server", true); }
 };
-
-// shared: apply a model result (used by fixlog) — mirrors converse()
 function applyModelResult(res, introIfProse){
   if(res.error){ addMsg("smith", fmtError(res)); return; }
-  $("#modelName").textContent = res.model || $("#modelName").textContent;
-  reflectKey(true);
-  const {prose, code} = splitReply(res.reply);
-  let flag = null;
-  if(code){
-    loadCode(code); setVersion("testing");
-    flag = `${state.name}.py updated`;
-    const at = res.autotest;
-    if(at && at.ran) flag += at.passed ? "  ·  ✓ auto-tested" : "  ·  ⚠ check still failing";
-  }
-  addMsg("smith", prose || introIfProse || "Done.", flag);
+  $("#modelName").textContent=res.model||$("#modelName").textContent; reflectKey(true);
+  const {prose, code}=splitReply(res.reply);
+  let flag=null;
+  if(code){ loadCode(code); setVersion("testing"); flag=`${state.name}.py updated`; const at=res.autotest; if(at && at.ran) flag+=at.passed?"  ·  ✓ auto-tested":"  ·  ⚠ check still failing"; }
+  addMsg("smith", prose||introIfProse||"Done.", flag);
   state.messages.push({role:"assistant", content:res.reply});
 }
+$("#console").addEventListener("dblclick", ()=>{ if(state.lastError){ send("It failed with this error:\n"+state.lastError); state.lastError=null; } });
 
-// quick "fix this error" affordance: double-click console error
-$("#console").addEventListener("dblclick", ()=>{
-  if(state.lastError){ send("It failed with this error:\n" + state.lastError); state.lastError=null; }
-});
-
-// ---------- settings ----------
-$("#settingsBtn").onclick = openSettings;
-let _settingsProvs = [];
+/* ============================ settings ============================ */
+$("#settingsBtn").onclick=openSettings;
+let _settingsProvs=[];
 function openSettings(){
-  $("#settingsScrim").classList.add("on");
+  openScrim("settingsScrim");
   fetch("/api/status").then(r=>r.json()).then(s=>{
-    _settingsProvs = s.providers||[];
-    const kp = $("#keyProvider");
-    kp.innerHTML = _settingsProvs.map(p=>
-      `<option value="${p.id}" ${p.id===s.provider?"selected":""}>${p.label}${p.hasKey?" ✓":""}</option>`
-    ).join("");
-    const refresh = ()=>{ updateKeyPlaceholder(_settingsProvs, kp.value); populateModels(kp.value); };
-    refresh();
-    kp.onchange = refresh;
+    _settingsProvs=s.providers||[];
+    const kp=$("#keyProvider");
+    kp.innerHTML=_settingsProvs.map(p=>`<option value="${p.id}" ${p.id===s.provider?"selected":""}>${p.label}${p.hasKey?" ✓":""}</option>`).join("");
+    const refresh=()=>{ updateKeyPlaceholder(_settingsProvs, kp.value); populateModels(kp.value); };
+    refresh(); kp.onchange=refresh;
+    const an=$("#autotestNote"); if(an && s.autotest!=null) an.textContent=s.autotest;
   }).catch(()=>{});
-  $("#keyInput").focus();
+  setTimeout(()=>{ const ki=$("#keyInput"); if(ki) ki.focus(); }, 30);
 }
 function populateModels(pid){
-  const p = _settingsProvs.find(x=>x.id===pid);
-  const note = $("#modelSourceNote");
+  const p=_settingsProvs.find(x=>x.id===pid), note=$("#modelSourceNote");
   if(!p){ $("#keyModel").innerHTML=""; if(note) note.textContent="\u00a0"; return; }
-  $("#keyModel").innerHTML = (p.models||[]).map((m,i)=>
-    `<option value="${escapeHtml(m)}" ${m===p.chosen?"selected":""}>${escapeHtml(m)}${i===0?"  (biggest)":""}</option>`
-  ).join("");
+  $("#keyModel").innerHTML=(p.models||[]).map((m,i)=>`<option value="${escapeHtml(m)}" ${m===p.chosen?"selected":""}>${escapeHtml(m)}${i===0?"  (biggest)":""}</option>`).join("");
   if(note){
-    if(p.live) note.innerHTML = `<span style="color:var(--lime)">● live</span> — ${(p.models||[]).length} models from your ${escapeHtml(p.label)} key`;
-    else note.innerHTML = p.hasKey ? `<span style="color:var(--amber)">● fallback list</span> — hit ↻ refresh to pull your live models`
-                                   : `<span style="color:var(--faint)">add a key, then ↻ refresh for your live models</span>`;
+    if(p.live) note.innerHTML=`<span style="color:var(--lime)">● live</span> — ${(p.models||[]).length} models from your ${escapeHtml(p.label)} key`;
+    else note.innerHTML=p.hasKey?`<span style="color:var(--amber)">● fallback list</span> — hit ↻ refresh to pull your live models`:`<span style="color:var(--faint)">add a key, then ↻ refresh for your live models</span>`;
   }
 }
-// ↻ refresh: ask the provider directly what this key can call
-$("#refreshModels").onclick = async ()=>{
-  const provider = $("#keyProvider").value;
-  const note = $("#modelSourceNote");
-  if(note) note.textContent = "fetching live models…";
+$("#refreshModels").onclick=async ()=>{
+  const provider=$("#keyProvider").value, note=$("#modelSourceNote");
+  if(note) note.textContent="fetching live models…";
   let r;
-  try{ r = await fetch("/api/models/refresh",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({provider})}).then(x=>x.json()); }
+  try{ r=await fetch("/api/models/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider})}).then(x=>x.json()); }
   catch(e){ if(note) note.textContent="couldn't reach the server"; return; }
-  // update the cached provider entry and repaint
-  const p = _settingsProvs.find(x=>x.id===provider);
-  if(p && r.models){ p.models = r.models; p.chosen = r.models[0]; p.live = (r.source==="live"); }
+  const p=_settingsProvs.find(x=>x.id===provider);
+  if(p && r.models){ p.models=r.models; p.chosen=r.models[0]; p.live=(r.source==="live"); }
   populateModels(provider);
   if(r.source==="live") toast(`Pulled ${r.models.length} models from ${p?p.label:provider}`);
-  else if(note) note.innerHTML = `<span style="color:var(--red)">couldn't fetch live list</span> — ${escapeHtml(r.error||"check the key")}`;
+  else if(note) note.innerHTML=`<span style="color:var(--red)">couldn't fetch live list</span> — ${escapeHtml(r.error||"check the key")}`;
 };
 function updateKeyPlaceholder(provs, pid){
-  const p = (provs||[]).find(x=>x.id===pid);
-  $("#keyInput").placeholder = (p && p.hasKey) ? "A key is already saved — leave blank to keep it" : "paste key…";
+  const p=(provs||[]).find(x=>x.id===pid);
+  $("#keyInput").placeholder=(p && p.hasKey)?"A key is already saved — leave blank to keep it":"paste key…";
 }
-$("#settingsCancel").onclick = ()=>$("#settingsScrim").classList.remove("on");
-$("#settingsSave").onclick = async ()=>{
-  const key = $("#keyInput").value.trim();
-  const provider = $("#keyProvider").value;
-  let model = $("#keyModel").value;
-  const p = _settingsProvs.find(x=>x.id===provider);
+$("#settingsCancel").onclick=()=>closeScrim("settingsScrim");
+$("#settingsSave").onclick=async ()=>{
+  const key=$("#keyInput").value.trim();
+  const provider=$("#keyProvider").value;
+  let model=$("#keyModel").value;
+  const p=_settingsProvs.find(x=>x.id===provider);
   if(!key && !(p && p.hasKey)){ toast("Paste a key for this provider first", true); return; }
   try{
     if(key){
-      const res = await fetch("/api/key",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({key, provider})}).then(r=>r.json());
+      const res=await fetch("/api/key",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({key, provider})}).then(r=>r.json());
       if(!res.hasKey){ toast("Key not accepted", true); return; }
-      // saving a key triggers a live model fetch server-side — reflect it
       if(res.models){
         if(p){ p.models=res.models; p.chosen=res.models[0]; p.live=(res.modelSource==="live"); }
         populateModels(provider);
-        if(res.modelSource!=="live" && res.modelError){ toast("Key saved, but live model fetch failed: "+res.modelError, true); }
-        // if the pinned model isn't in the new list, clear the pin
-        if(model && !res.models.includes(model)) model = "";
+        if(res.modelSource!=="live" && res.modelError) toast("Key saved, but live model fetch failed: "+res.modelError, true);
+        if(model && !res.models.includes(model)) model="";
       }
     }
-    if(model){
-      await fetch("/api/model",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({provider, model})});
-    }
+    if(model){ await fetch("/api/model",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider, model})}); }
   }catch(e){ toast("Couldn't reach the local server", true); return; }
-  $("#settingsScrim").classList.remove("on");
-  $("#keyInput").value = "";
-  toast("Saved" + (model?` · model: ${model.split("/").pop()}`:""));
+  closeScrim("settingsScrim");
+  $("#keyInput").value="";
+  toast("Saved"+(model?` · model: ${model.split("/").pop()}`:""));
   init();
 };
 
-// ---------- new ----------
-$("#newBtn").onclick = ()=>{
+/* interface size slider */
+$("#scaleSlider").addEventListener("input", e=>applyScale((+e.target.value)/100));
+$("#scaleReset").onclick=()=>{ applyScale(1); toast("Interface size reset to 100%"); };
+
+/* ============================ new tool ============================ */
+$("#newBtn").onclick=()=>{
   state.messages=[]; state.code=null; state.name="tool"; state.pendingRelease=false; state.lastError=null;
   state.intakeDone=false; state.intakeAnswers={}; state.attachments=[]; renderAttachments();
   setVersion("testing");
   $("#thread").innerHTML=""; $("#codeFile").textContent="no draft yet"; $("#fileName").textContent="untitled.py";
-  $("#codeBody").innerHTML = `<div class="empty"><img src="/assets/icon.svg" alt=""><h2>Nothing on the anvil yet</h2><p>Describe a GUI tool on the left to begin.</p></div>`;
-  $("#console").innerHTML = `<span class="placeholder">Launch output appears here.</span>`;
+  $("#codeBody").innerHTML=`<div class="empty"><img src="/assets/icon.svg" alt=""><h2>Nothing on the anvil yet</h2><p>Describe a GUI tool on the left to begin.</p></div>`;
+  $("#console").innerHTML=`<span class="placeholder">Launch output appears here.</span>`;
   $("#args").value=""; showStop(null);
-  state.prevCode=null;
-  state.sessionId=null;
+  state.prevCode=null; state.sessionId=null;
   ["copyBtn","saveBtn","runBtn","releaseBtn","fixLogBtn","polishBtn","dlLogBtn","clearLogBtn",
    "editBtn","diffBtn","depsBtn","libSaveBtn","reviewBtn","buildBtn"].forEach(id=>$("#"+id).disabled=true);
   greet();
 };
 
-// ---------- util ----------
+/* ============================ utils ============================ */
 function esc(s){ return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
-// escapeHtml is used throughout (library, sessions, intake, diff, settings). It was
-// referenced but never defined, which threw ReferenceError and silently broke every
-// panel that rendered user/model text. It's the same job as esc(), so alias it.
 function escapeHtml(s){ return esc(s); }
-// Turn a server error response into a clear, friendly message. The context-overflow
-// case used to surface as a cryptic "model unavailable on your plan" — now it's plain.
 function fmtError(res){
-  if(res.error === "context_overflow"){
-    return "⚠ " + (res.detail || "This conversation got too long for the model. Start a new tool (＋ new tool) to reset — your library is safe.");
-  }
-  return "⚠ " + (res.detail ? res.error + " — " + res.detail : res.error);
+  if(res.error==="context_overflow") return "⚠ "+(res.detail||"This conversation got too long for the model. Start a new tool (＋ new tool) to reset — your library is safe.");
+  return "⚠ "+(res.detail?res.error+" — "+res.detail:res.error);
 }
 let toastT;
 function toast(msg, bad){
   const el=$("#toast"); el.textContent=msg;
-  el.style.borderLeftColor = bad ? "var(--red)" : "var(--lime)";
+  el.style.borderLeftColor=bad?"var(--red)":"var(--lime)";
   el.classList.add("show"); clearTimeout(toastT);
   toastT=setTimeout(()=>el.classList.remove("show"), 2600);
 }
