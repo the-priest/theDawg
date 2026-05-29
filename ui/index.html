@@ -794,8 +794,18 @@ $("#winMin").onclick = ()=>{
 };
 
 // ---------- boot ----------
+// localStorage can THROW (not just return null) in app-mode windows, private
+// mode, or when storage is blocked. safeGet/safeSet below swallow that. We also
+// guard the boot line itself: a failure restoring the saved size must never stop
+// init() from running or the button handlers below from being attached.
+function safeGet(key){
+  try{ return localStorage.getItem(key); }catch(e){ return null; }
+}
+function safeSet(key,val){
+  try{ localStorage.setItem(key,val); return true; }catch(e){ return false; }
+}
 let providers = [];
-applyScale(loadScale());   // restore saved interface size before anything paints
+try{ applyScale(loadScale()); }catch(e){ /* size restore failed; default stays */ }
 init();
 async function init(){
   await loadSounds();   // discover & preload first, so startup actually plays
@@ -840,11 +850,11 @@ const NARROW_PX = 760;                            // mobile below this width
 // --- layout preference (auto / desktop / mobile) ---
 const LAYOUT_KEY = "thedawg.layout";
 function loadLayoutPref(){
-  const v = localStorage.getItem(LAYOUT_KEY);
+  const v = safeGet(LAYOUT_KEY);
   return (v === "desktop" || v === "mobile") ? v : "auto";
 }
 function saveLayoutPref(v){
-  try{ localStorage.setItem(LAYOUT_KEY, v); }catch(e){}
+  safeSet(LAYOUT_KEY, v);
 }
 
 // store the detection result, then let recomputeLayout do the deciding
@@ -914,27 +924,27 @@ function setPane(which){
   if(tc) tc.classList.toggle("on", chat);
   if(tw) tw.classList.toggle("on", !chat);
 }
-$("#tabChat").onclick = ()=>setPane("chat");
-$("#tabWork").onclick = ()=>setPane("work");
+const _tc = $("#tabChat"); if(_tc) _tc.onclick = ()=>setPane("chat");
+const _tw = $("#tabWork"); if(_tw) _tw.onclick = ()=>setPane("work");
 
 // --- interface size (global zoom) ---
 const SCALE_KEY = "thedawg.uiScale";
 function loadScale(){
-  let v = parseFloat(localStorage.getItem(SCALE_KEY));
+  let v = parseFloat(safeGet(SCALE_KEY));
   if(!isFinite(v)) v = 1;
   return Math.min(1.6, Math.max(0.6, v));   // clamp — can't be set unusable
 }
 function applyScale(v){
   v = Math.min(1.6, Math.max(0.6, v || 1));
   document.documentElement.style.setProperty("--ui-scale", v);
-  try{ localStorage.setItem(SCALE_KEY, String(v)); }catch(e){}
+  safeSet(SCALE_KEY, String(v));
   const sl = $("#scaleSlider"), lab = $("#scaleVal");
   if(sl) sl.value = Math.round(v*100);
   if(lab) lab.textContent = Math.round(v*100) + "%";
   return v;
 }
-$("#scaleSlider").addEventListener("input", e=>applyScale((+e.target.value)/100));
-$("#scaleReset").onclick = ()=>{ applyScale(1); toast("Interface size reset to 100%"); };
+const _ss = $("#scaleSlider"); if(_ss) _ss.addEventListener("input", e=>applyScale((+e.target.value)/100));
+const _sr = $("#scaleReset"); if(_sr) _sr.onclick = ()=>{ applyScale(1); toast("Interface size reset to 100%"); };
 
 // ---------- sound triggers ----------
 // Drop audio files into thedawg/sounds/ with these names — the matching event
