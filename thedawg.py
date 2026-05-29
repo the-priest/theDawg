@@ -1,24 +1,21 @@
 #!/usr/bin/env python3
 """
-TheDawg  -  AI-assisted cross-platform Python toolsmith
-========================================================
+TheDawg  -  AI-assisted Linux Python toolsmith
+==============================================
 A local workspace for building real, graphical Python tools by talking to a model —
-tools that run on BOTH Windows AND Linux (and macOS as a bonus). You agree on the
-tool in a build dialogue, TheDawg writes a TESTING version you launch right here
-on YOUR box, you iterate on real behaviour, and only when you ask does it package
-a RELEASE version. Then with one button it can also pack the tool into a single-file
-.exe (on Windows) or a standalone binary (on Linux / macOS) via PyInstaller.
+GUI tools for Linux, tuned for Kali on Phosh (mobile GNOME, Wayland, OnePlus 6) and
+KDE Plasma (X11, desktop). You agree on the tool in a build dialogue, TheDawg writes a
+TESTING version you launch right here on YOUR box, you iterate on real behaviour, and
+only when you ask does it package a RELEASE version. Then with one button it can also
+pack the tool into a single-file Linux binary via PyInstaller.
 
-Cross-platform from the ground up:
-  - paths via pathlib + per-OS app-data dirs (%APPDATA% on Windows, ~/.local/share
-    on Linux, ~/Library/Application Support on macOS)
-  - process management that knows the difference between CTRL_BREAK_EVENT and
-    SIGTERM, between CREATE_NEW_PROCESS_GROUP and start_new_session
-  - GUI toolkits installed via pip into a managed venv (no apt) so Windows users
-    aren't left out
-  - generated tools get BOTH install.sh (curl|bash) AND install.ps1 (iwr|iex)
-  - the model is taught to write portable code — no os.fork, no hardcoded /tmp,
-    no backslash paths, no msvcrt without a fallback
+Built for Linux from the ground up:
+  - paths via pathlib + XDG dirs (~/.config, ~/.local/share)
+  - process management with POSIX session/signal handling
+  - GUI toolkits installed via pip into a managed venv
+  - generated tools ship an install.sh (curl|bash) and a .desktop entry with an icon
+  - the model is taught to write Linux GUI code that works under BOTH Wayland (Phosh)
+    and X11 (KDE), and to stay responsive on a narrow phone screen
 
 This file is a tiny local HTTP server (standard library only). It:
   - serves the workspace UI to your browser
@@ -26,14 +23,12 @@ This file is a tiny local HTTP server (standard library only). It:
   - LAUNCHES the generated GUI locally so "test it" is real
   - is GUI-aware: detects the toolkit, runs with the right interpreter, surfaces
     startup errors, doesn't block waiting for a window you left open
-  - never auto-runs anything: you click run, and a destructive-pattern scan
-    (now Windows-aware: format c:, del /s /q, etc.) guards it
+  - never auto-runs anything: you click run, and a destructive-pattern scan guards it
 
 Run:
-    set GROQ_API_KEY=gsk_...        (Windows: cmd)
-    $env:GROQ_API_KEY="gsk_..."     (Windows: PowerShell)
-    export GROQ_API_KEY="gsk_..."   (Linux / macOS)
-    python thedawg.py               # opens http://127.0.0.1:8765 in your browser
+    export SILICONFLOW_API_KEY="sk-..."   # primary provider
+    export GROQ_API_KEY="gsk_..."         # fallback provider
+    python3 thedawg.py                    # opens http://127.0.0.1:8765 in your browser
 
 License: MIT
 """
@@ -66,6 +61,52 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 IS_WIN = platform.system() == "Windows"
 IS_MAC = platform.system() == "Darwin"
 IS_LINUX = not IS_WIN and not IS_MAC
+
+def detect_desktop_env():
+    """Classify the running Linux session so the UI can lay itself out for the
+    right machine. Returns a dict the browser uses to pick a layout:
+
+      {"de": "phosh"|"kde"|"gnome"|"other", "form": "mobile"|"desktop",
+       "session": "wayland"|"x11"|"unknown", "raw": "<XDG_CURRENT_DESKTOP>"}
+
+    Phosh (mobile GNOME shell on the OnePlus 6) -> a narrow, stacked, touch
+    layout; KDE Plasma (and other desktops) -> the wide two-pane layout.
+
+    Detection reads the freedesktop environment variables every session sets:
+      - XDG_CURRENT_DESKTOP : ':'-joined desktop names (e.g. "Phosh:GNOME",
+        "KDE", "GNOME"). This is the primary signal.
+      - XDG_SESSION_TYPE / WAYLAND_DISPLAY : wayland vs x11.
+      - PHOSH_* vars and the "phone" form factor hint Phosh exports.
+
+    Everything degrades gracefully: on non-Linux, or when nothing is set, we
+    report "other"/"desktop" so the wide layout is used. The browser can always
+    override this with its own saved preference — this is only the default.
+    """
+    raw = os.environ.get("XDG_CURRENT_DESKTOP", "") or ""
+    desk = raw.lower()
+    sess = (os.environ.get("XDG_SESSION_TYPE", "") or "").lower()
+    if not sess:
+        sess = "wayland" if os.environ.get("WAYLAND_DISPLAY") else (
+            "x11" if os.environ.get("DISPLAY") else "unknown")
+
+    # Phosh sets XDG_CURRENT_DESKTOP to include "Phosh"; it also exports a few
+    # PHOSH_* vars. Treat any of those as the mobile shell.
+    is_phosh = ("phosh" in desk
+                or any(k.startswith("PHOSH_") for k in os.environ)
+                or os.environ.get("GNOME_SHELL_SESSION_MODE", "").lower() == "phosh")
+
+    if is_phosh:
+        de, form = "phosh", "mobile"
+    elif "kde" in desk or "plasma" in desk:
+        de, form = "kde", "desktop"
+    elif "gnome" in desk:
+        de, form = "gnome", "desktop"
+    elif desk:
+        de, form = "other", "desktop"
+    else:
+        de, form = "other", "desktop"
+
+    return {"de": de, "form": form, "session": sess, "raw": raw}
 
 def app_data_dir():
     """Per-OS app data dir (writes that should persist + survive)."""
@@ -132,12 +173,13 @@ PROVIDERS = {
         "models_url": "https://api.siliconflow.com/v1/models?sub_type=chat",
         "env": "SILICONFLOW_API_KEY",
         "kind": "openai",
-        # biggest / strongest first (fallback only — live fetch overrides)
+        # V4 Flash first — your chosen primary: 1M context, fast, far cheaper than Pro.
+        # The rest are fallbacks only; a live /models fetch overrides this list.
         "models": [
+            "deepseek-ai/DeepSeek-V4-Flash",
             "deepseek-ai/DeepSeek-V3",
             "Qwen/Qwen2.5-72B-Instruct",
             "Qwen/Qwen2.5-Coder-32B-Instruct",
-            "deepseek-ai/DeepSeek-V2.5",
             "Qwen/Qwen2.5-7B-Instruct",
         ],
     },
@@ -171,64 +213,75 @@ PROVIDERS = {
     },
 }
 
-# default provider on first launch
-DEFAULT_PROVIDER = "groq"
+# default provider on first launch: SiliconFlow primary, Groq is the fallback.
+DEFAULT_PROVIDER = "siliconflow"
+# when no model is explicitly chosen, prefer this one on the default provider.
+# DeepSeek V4 Flash is the primary: 1M context, fast, and far cheaper than V4 Pro.
+DEFAULT_MODEL_BY_PROVIDER = {
+    "siliconflow": "deepseek-ai/DeepSeek-V4-Flash",
+}
+# providers tried in order if the primary provider's whole chain fails outright.
+FALLBACK_PROVIDERS = ["groq"]
 
 # auto-test loop: after the model writes code, TheDawg silently checks it and
 # feeds failures back to the model up to this many times before showing you.
-AUTOTEST_MAX_ROUNDS = 2
+AUTOTEST_MAX_ROUNDS = 3
+
+# temperature used ONLY for code generation / auto-fix. Lower than the 0.3 default
+# used elsewhere: code wants determinism, not creativity — fewer invented APIs and
+# careless mistakes, more reproducible output.
+BUILD_TEMPERATURE = 0.15
 
 HOST = "127.0.0.1"
 PORT = 8765
 
 # This is the heart of it: the model is taught to build GRAPHICAL tools the way a
 # careful senior engineer does -- agree first, testing version by default, release
-# only on request. It targets Windows, Linux, and macOS from one script. Tune to taste.
+# only on request. It targets Linux (Kali / Phosh / KDE Plasma). Tune to taste.
 SYSTEM_PROMPT = """You are TheDawg, a senior Python engineer who builds small, sharp, genuinely
-working GRAPHICAL (GUI) desktop tools that run NATIVELY on BOTH Windows AND Linux (and macOS as a
-bonus) from the SAME single-file script — no per-OS forks, no "Linux-only" code paths. Every tool
-you produce opens a real window — never a bare command-line script. You write the kind of code a
-careful professional ships: correct, defensive, readable, responsive, AND portable. Hold yourself
-to that bar regardless of how the request is phrased.
+working GRAPHICAL (GUI) desktop tools for LINUX from a single-file script. The target machines are
+Kali Linux on two setups: Phosh (the mobile GNOME shell, Wayland, on a OnePlus 6 — small touch
+screen, portrait-friendly) and KDE Plasma on X11 (desktop, mouse + keyboard). Every tool you produce
+opens a real window — never a bare command-line script. You write the kind of code a careful
+professional ships: correct, defensive, readable, responsive. Hold yourself to that bar regardless
+of how the request is phrased.
 
 TOOLKIT (pick ONE per tool — the user is asked in the intake; honour their choice exactly):
-- Tkinter — stdlib, no install needed (ships with Python on Windows / macOS; needs `python3-tk`
-  on some Linux). The safest pick for "just works everywhere".
+- Tkinter — stdlib, no pip install (on Kali/Debian it needs the system package `python3-tk`,
+  installed with `sudo apt install python3-tk`). The safest pick for "just works".
 - CustomTkinter — modern, themed Tkinter (`pip install customtkinter`). Drop-in upgrade to
   Tkinter with a polished look. Use when the user wants something nicer than raw Tk.
-- PyQt5 / PyQt6 / PySide6 — most polished and feature-rich; `pip install` on all three OSes.
-  Bigger install but worth it for serious tools.
+- PyQt5 / PyQt6 / PySide6 — most polished and feature-rich; `pip install`. Qt sits most naturally
+  on KDE Plasma and also renders well under Phosh. Best for serious, feature-rich tools.
 - wxPython — only if explicitly requested; pip install but compilation can be slow.
 Whatever you choose, stay on ONE toolkit for the whole tool. Never mix toolkits.
 
-CROSS-PLATFORM ENGINEERING (apply to EVERY tool you write — non-negotiable):
-- Paths: ALWAYS use `pathlib.Path` or `os.path.join` — never hardcoded "/" or "\\\\" or
-  "C:\\\\..." or "/tmp/...". Use `tempfile.gettempdir()` for temp, `Path.home()` for the home dir,
-  `os.environ.get("APPDATA")` on Windows (with a fallback) for app data, `~/.local/share` on
-  Linux, `~/Library/Application Support` on macOS.
-- Subprocesses: prefer a list argv (no shell=True). When you DO need a shell-like feature, use
-  `shutil.which` first to find the binary. On Windows the launched binary may be a `.exe` or
-  `.bat` — let subprocess handle that, don't hardcode the extension.
-- No POSIX-only calls without a guard: `os.fork`, `os.setsid`, `os.killpg`, `pwd`, `grp`,
-  `fcntl`, `termios`, `resource`, `signal.SIGKILL` (Windows lacks it — use proc.kill()).
-  If you genuinely need them, gate behind `if sys.platform != "win32":` with a working Windows
-  branch.
-- No Windows-only calls without a guard: `msvcrt`, `winreg`, `win32api`, `ctypes.windll`.
-  Same rule: guard with `if sys.platform == "win32":` and provide a Linux/macOS branch.
-- Line endings: when reading text files use `open(..., "r")` (universal newlines on by default);
-  when writing files the OS-default is fine. Never assume `\\n` vs `\\r\\n`.
-- External binaries: detect with `shutil.which`. If a binary is absent, show a clear in-window
-  message that names what to install AND notes any per-OS install hint — never a silent failure
-  or a raw traceback dialog.
-- Encoding: pass `encoding="utf-8"` to `subprocess.run/Popen` text mode and to file `open()`
-  for text. Windows defaults to cp1252 and will mangle non-ASCII output otherwise.
+LINUX ENGINEERING (apply to EVERY tool — non-negotiable):
+- Paths: ALWAYS use `pathlib.Path`/`os.path.join` — never hardcoded "/tmp/...". Use
+  `tempfile.gettempdir()` for temp, `Path.home()` for home, `~/.config/<app>` for config and
+  `~/.local/share/<app>` for data (honour `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME` when set).
+- Subprocesses: prefer a list argv (never shell=True with user input). Find external binaries with
+  `shutil.which` and, if one is missing, show a clear in-window message naming the package and the
+  `sudo apt install ...` line — never a silent failure or a raw traceback dialog.
+- Encoding: pass `encoding="utf-8"` to `subprocess.run/Popen` text mode and to file `open()`.
+- POSIX is fine to use directly (os.setsid, signal.SIGTERM, etc.) — no Windows guards needed. Do
+  NOT import Windows-only modules (msvcrt, winreg, win32api) or write any Windows code paths.
+- DISPLAY SERVER AWARENESS: the same code must run under BOTH Wayland (Phosh) and X11 (KDE). Don't
+  assume one — never hardcode `DISPLAY=:0`, don't shell out to `xdotool`/`wmctrl` for core function
+  (X11-only), and prefer the toolkit's own APIs for clipboard, screenshots, and window control so
+  they work on both. If a feature is genuinely X11-only, detect `os.environ.get("WAYLAND_DISPLAY")`
+  and degrade gracefully with an explanatory message.
+- TOUCH + SMALL SCREEN (Phosh): the OnePlus 6 screen is narrow and portrait. Make windows resize
+  cleanly down to ~360px wide, keep controls finger-sized, let content scroll vertically rather than
+  needing a wide window, and never rely on hover-only interactions.
 
 GUI ENGINEERING STANDARDS:
 - It must actually open a window and do the agreed job when launched. Mentally trace startup,
   the main interaction, and the obvious failure paths before you output.
-- RESPONSIVE LAYOUT. Set a sane default size (e.g. 720x560), allow the window to resize, and
-  let content scroll/reflow rather than clip. Use the toolkit's layout managers (grid, pack with
-  expand=True, Qt layouts) — never hardcoded pixel positions that overflow on a different DPI.
+- RESPONSIVE LAYOUT. Set a sane default size (e.g. 720x560 desktop / comfortable when narrowed for
+  Phosh), allow the window to resize, and let content scroll/reflow rather than clip. Use the
+  toolkit's layout managers (grid, pack with expand=True, Qt layouts) — never hardcoded pixel
+  positions that overflow on a different DPI.
 - NEVER FREEZE THE UI. Any work that blocks — network calls, file scans, subprocess runs, large
   reads — MUST run off the main thread (`threading.Thread`) and marshal results back to the GUI
   thread safely (`widget.after` for Tkinter, signals for Qt). The window must stay responsive
@@ -252,6 +305,35 @@ GUI ENGINEERING STANDARDS:
   third-party dependency; if you genuinely need another package, put the exact install line on
   ONE line BEFORE the code block (always `pip install ...` — TheDawg installs into a managed venv).
 
+RUNTIME CORRECTNESS — the bugs that slip past a parse/import check and only bite when the window
+actually opens. TheDawg pre-checks your code by IMPORTING it, not by opening the window, so these
+are exactly the mistakes that reach the user. Trace each one before you output:
+- WIDGET REFERENCES THAT OUTLIVE THEIR SCOPE: any widget a callback or thread touches later must be
+  stored on `self` (or captured in a closure that stays alive) — not a bare local that is garbage
+  collected the moment the constructor returns. In Tkinter specifically, an image (`PhotoImage`,
+  `ImageTk.PhotoImage`) MUST be kept on `self` or it is GC'd and the widget shows blank.
+- THREAD → GUI MARSHALLING, every time: a worker thread must NEVER touch a widget directly. Tkinter:
+  hand results back with `widget.after(0, lambda: ...)`. Qt: emit a signal connected to a main-thread
+  slot, or use `QMetaObject.invokeMethod` — never call `setText`/`append` from the worker.
+- CALLBACK ARGUMENTS: `command=` (Tk) and `clicked.connect` (Qt) pass specific args. Tk `command`
+  takes none; Tk `bind` passes an event; Qt `clicked` passes a bool. Match the handler signature, or
+  wrap in `lambda` to absorb/forward args. A late-binding loop (`for x in xs: btn(command=lambda: f(x))`)
+  captures the LAST x — use `lambda x=x: f(x)`.
+- LIFECYCLE: create exactly ONE root/QApplication; call `mainloop()` / `app.exec()` exactly once, at
+  the end, under `__main__`. Don't create a second `Tk()` for a dialog (use `Toplevel`); don't call
+  `mainloop()` from inside a callback.
+- BLANK / FROZEN WINDOW: if the layout uses `pack`/`grid`, give expandable widgets `fill`/`expand` or
+  `sticky` + row/column weights, or the window opens empty or unscrollable. Long startup work belongs
+  in a thread with a visible "loading…" state, never inline in `__init__`.
+- EXTERNAL PROCESS RESULTS: when wrapping a binary, capture BOTH stdout and stderr, decode with
+  `encoding="utf-8", errors="replace"`, check the return code, and surface failures in the window —
+  a non-zero exit with output only on stderr is the usual "it silently did nothing" bug.
+- STATE AFTER ERRORS: re-enable buttons / hide spinners in a `finally`, so one failed run doesn't
+  leave the UI stuck disabled.
+Self-review pass before you finish: re-read your own code once and confirm every name is defined,
+every `self.x` used in a callback was assigned in `__init__`, every function/method is called with
+the right number of arguments, and no widget update happens off the main thread.
+
 METHOD (the build dialogue):
 1. CLARIFY BEFORE BUILDING. If meaningful details are unresolved, do not dump code — surface the
    decisions. (TheDawg may run a structured intake for you; honour every answer precisely,
@@ -261,10 +343,9 @@ METHOD (the build dialogue):
    packaging ceremony yet.
 3. ITERATE on real feedback: when given a run result/error/log, return the FULL updated script
    (never a diff) and state briefly what you changed and why.
-4. RELEASE VERSION ONLY WHEN ASKED: top docstring with summary + how to launch on each OS, clean
+4. RELEASE VERSION ONLY WHEN ASKED: top docstring with summary + how to launch on Linux, clean
    class structure, an optional minimal argparse for launch flags (e.g. --version) that does NOT
-   replace the GUI, robust error handling, helpful comments, zero dead code. Still a GUI app, and
-   still portable.
+   replace the GUI, robust error handling, helpful comments, zero dead code. Still a GUI app.
 5. SAFETY: no destructive operations (mass deletion, disk wipes, fork bombs) unless the user
    explicitly and unambiguously asks; if so, call it out. Assume it runs on the user's own machine.
 
@@ -274,12 +355,12 @@ only planning or discussing, include no code block at all."""
 
 # Used to generate a tailored, clickable intake for a new tool request.
 INTAKE_PROMPT = """You are the requirements analyst for TheDawg, a builder of GRAPHICAL (GUI) Python
-tools that must run NATIVELY on BOTH Windows AND Linux (and macOS) from the same single-file script.
-The user wants to build a tool. Produce the SHORT, HIGH-VALUE set of questions needed to build
-EXACTLY the right cross-platform GUI — no lazy or generic filler.
+tools for LINUX — specifically Kali on Phosh (mobile GNOME, Wayland, small touch screen) and KDE
+Plasma (X11, desktop). The user wants to build a tool. Produce the SHORT, HIGH-VALUE set of
+questions needed to build EXACTLY the right Linux GUI — no lazy or generic filler.
 
 Return ONLY a JSON object, no prose, no markdown fences:
-{"summary": "<one line restating the cross-platform GUI tool they want to build>",
+{"summary": "<one line restating the Linux GUI tool they want to build>",
  "questions": [
    {"q": "<clear question>", "options": ["<opt1>", "<opt2>", "<opt3>"], "multi": false},
    ...
@@ -287,26 +368,25 @@ Return ONLY a JSON object, no prose, no markdown fences:
 
 Rules:
 - 3 to 6 questions MAX. Only ask what genuinely changes the code.
-- ALWAYS include a toolkit question with options like ["Tkinter (stdlib, zero install)",
+- ALWAYS include a toolkit question with options like ["Tkinter (stdlib, needs python3-tk)",
   "CustomTkinter (modern look, one pip install)", "PyQt5 / PySide6 (most polished)"] — pick the
   options that fit THIS tool. Tkinter is the safe default for simple tools; CustomTkinter when
-  the user wants something prettier; Qt for serious feature-rich tools.
+  the user wants something prettier; Qt for serious feature-rich tools (sits well on KDE).
 - Tailor the rest to THIS tool: what the main window shows (e.g. table of results, live log,
   form + output pane), what inputs the user gives (fields, file picker, target/range), whether it
-  wraps an external binary (and you should ask which OS the binary is expected on if relevant —
-  some tools have different binary names per OS) or is pure-Python, and how results are
-  presented/exported (in-window list, save to file, copy to clipboard).
-- Do NOT ask whether the tool should "work on Windows or Linux" — it MUST work on both. That's
-  TheDawg's whole point. Only ask if there's a specific OS-dependent feature that needs a choice
-  (e.g. "use system notifications? — yes / no").
+  wraps an external Linux binary (and which one — many Kali tools shell out to things like nmap,
+  tcpdump, aircrack-ng) or is pure-Python, and how results are presented/exported (in-window list,
+  save to file, copy to clipboard).
+- Do NOT ask which OS — it is always Linux. Only ask about an OS-feature when it matters (e.g.
+  "show desktop notifications? — yes / no", or "does this need to run on the Phosh phone too?").
 - 2 to 4 options per question. Options must be concrete and mutually distinct. Set "multi": true
   only when picking several genuinely makes sense.
 - Prefer options the user can just tap. Keep them short."""
 
 # Used by the GitHub-ready flow to assemble repo files from the user's answers.
-GITHUB_PROMPT = """You are preparing a polished GitHub release of a Python GUI tool that runs
-NATIVELY on BOTH Windows AND Linux (and macOS). You will be given the final code and the user's repo
-details. Produce a complete, professional repo.
+GITHUB_PROMPT = """You are preparing a polished GitHub release of a LINUX Python GUI tool (targets
+Kali on Phosh and KDE Plasma). You will be given the final code and the user's repo details.
+Produce a complete, professional repo.
 
 Return ONLY a JSON object, no prose, no markdown fences:
 {"readme": "<full README.md markdown>",
@@ -315,15 +395,15 @@ Return ONLY a JSON object, no prose, no markdown fences:
  "description": "<one-line repo description>"}
 
 README requirements:
-- Title, one-line description, then a short paragraph: what the GUI does, that it runs on Windows,
-  Linux, and macOS from the same script.
+- Title, one-line description, then a short paragraph: what the GUI does and that it is a native
+  Linux tool (tested on Kali / Phosh / KDE Plasma).
 - A "Requirements" section listing Python ≥ 3.8 and the pip packages from requirements.txt (or
-  noting "pure standard library" if there are none).
-- An "Install" section with TWO one-line installers, clearly labelled:
-    Linux / macOS:   curl -fsSL https://raw.githubusercontent.com/<user>/<repo>/<branch>/install.sh | bash
-    Windows (PS):    iwr -useb https://raw.githubusercontent.com/<user>/<repo>/<branch>/install.ps1 | iex
-  The same lines should work for updates (re-running them). Use the exact user/repo/branch given.
-- A "Usage" section: launch from the Start Menu / app grid, or by running `<name>` from a terminal,
+  noting "pure standard library" if there are none). If the tool uses Tkinter, note the system
+  package `sudo apt install python3-tk`.
+- An "Install" section with ONE one-line installer:
+    curl -fsSL https://raw.githubusercontent.com/<user>/<repo>/<branch>/install.sh | bash
+  The same line should work for updates (re-running it). Use the exact user/repo/branch given.
+- A "Usage" section: launch from the app grid / launcher, or by running `<name>` from a terminal,
   and a sentence on the main window. Keep it real and copy-pasteable.
 - The license name. Clean, scannable, professional. No fluff.
 
@@ -333,9 +413,9 @@ empty string."""
 
 # Used by the "review my code" button: a focused critique that DIAGNOSES, never rewrites.
 REVIEW_PROMPT = """You are a senior Python/GUI engineer doing a careful code review of a single-file
-cross-platform tool (Tkinter / CustomTkinter / PyQt / PySide). You are given the FULL code and,
-separately, the findings of an automated static analyzer. Your job is to REVIEW, not rewrite — do
-NOT output a corrected script.
+Linux tool (Tkinter / CustomTkinter / PyQt / PySide), targeting Kali on Phosh (Wayland) and KDE
+Plasma (X11). You are given the FULL code and, separately, the findings of an automated static
+analyzer. Your job is to REVIEW, not rewrite — do NOT output a corrected script.
 
 Look hard for things that will actually bite the user:
 - logic errors and clashes: functions called with wrong/!args, methods that don't exist on the
@@ -343,10 +423,9 @@ Look hard for things that will actually bite the user:
 - GUI-specific problems: blocking work on the main thread (freezes the window), missing
   widget.after / signals when updating the UI from a thread, missing graceful handling when the
   toolkit isn't installed
-- PORTABILITY: any POSIX-only call without a Windows guard (os.fork, os.setsid, os.killpg, pwd,
-  grp, fcntl, signal.SIGKILL); any Windows-only call without a POSIX guard (msvcrt, winreg,
-  win32api); hardcoded paths like "/tmp", "C:\\\\", backslash separators; missing encoding="utf-8"
-  on Windows text I/O; shell=True with user input
+- LINUX/DISPLAY: hardcoded paths like "/tmp"; missing encoding="utf-8" on text I/O; shell=True with
+  user input; X11-only assumptions (xdotool/wmctrl, hardcoded DISPLAY) that break under Wayland on
+  Phosh; layouts that can't narrow to a phone-width window
 - correctness: unhandled error paths, resource leaks, race conditions, off-by-one, wrong defaults
 - dead or contradictory code, and anything that simply won't do what it claims
 
@@ -478,6 +557,14 @@ def _model_rank(mid):
                     ("flash", -20), ("mini", -40), ("lite", -45), ("small", -50),
                     ("8b", 8), ("7b", 7), ("3b", 3), ("1.5", -10)):
         if kw in s: score += pts
+    # generation/version bonus: a newer major version of the same family should sort
+    # first (e.g. deepseek-v4-* above deepseek-v3, gemini-2.5 above gemini-1.5). Weighted
+    # heavily enough that a newer generation beats an older one even when the newer is a
+    # "flash"/"mini" variant (which otherwise carries a size penalty above).
+    vm = re.search(r"v(\d+)\b", s) or re.search(r"-(\d+)\.(\d+)", s)
+    if vm:
+        try: score += int(vm.group(1)) * 25
+        except Exception: pass
     return score
 
 def fetch_models(provider_id, force=False):
@@ -793,6 +880,10 @@ MODEL_CONTEXT_TOKENS = {
     # Novita
     "deepseek/deepseek-v3": 64000, "qwen/qwen-2.5-72b-instruct": 32000,
     "meta-llama/llama-3.1-70b-instruct": 128000, "meta-llama/llama-3.1-8b-instruct": 128000,
+    # DeepSeek (first-party) — V4 Pro and Flash both carry a 1M-token window
+    # DeepSeek V4 context windows (1M-token), as exposed via SiliconFlow / Novita
+    "deepseek-ai/deepseek-v4-flash": 1000000, "deepseek-ai/deepseek-v4-pro": 1000000,
+    "deepseek/deepseek-v4-flash": 1000000, "deepseek/deepseek-v4-pro": 1000000,
 }
 DEFAULT_CONTEXT_TOKENS = 16000      # safe assumption for an unknown model
 REPLY_RESERVE_TOKENS   = 4000       # leave room for the model's answer
@@ -804,7 +895,10 @@ def context_budget_chars(model):
     usable = max(2000, toks - REPLY_RESERVE_TOKENS)
     # ~3 input chars per token (conservative for code), capped so we never send an
     # absurdly huge request even to a million-token model (keeps latency/cost sane).
-    return min(usable * 3, 300_000)
+    # The cap is generous enough that a large tool plus a long build conversation
+    # survives on a big-window model (e.g. DeepSeek V4 Flash / Gemini) instead of
+    # being trimmed prematurely, but still bounds latency and token spend.
+    return min(usable * 3, 600_000)
 
 def _msg_len(m):
     return len(m.get("content", "") or "")
@@ -907,26 +1001,46 @@ def trim_history(messages, model=None):
                        "content": c[:keep_len] + "\n…(truncated by TheDawg to fit this model's context)…"}
     return result
 
-def call_model(messages, provider_id=None):
+def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None):
     """Call the selected provider, falling through its model chain on error.
-    Returns {"reply", "model", "provider"} or {"error"}."""
+    Returns {"reply", "model", "provider"} or {"error"}.
+    `temperature` defaults to 0.3; the code-build path lowers it for determinism.
+    If the whole provider chain fails AND a key exists for a configured fallback
+    provider (e.g. Groq behind SiliconFlow), the call is retried there once so a
+    SiliconFlow outage or quota stop doesn't dead-end the build."""
     pid = provider_id or STATE.get("provider") or DEFAULT_PROVIDER
     prov = PROVIDERS.get(pid)
     if not prov:
         return {"error": f"Unknown provider '{pid}'."}
     key = STATE.get("keys", {}).get(pid, "")
+    # compute fallback providers up front so even a missing key can fall through.
+    if _fallback_chain is None:
+        _fallback_chain = [p for p in FALLBACK_PROVIDERS
+                           if p != pid and STATE.get("keys", {}).get(p)]
     if not key:
+        if _fallback_chain:
+            nxt_pid, rest = _fallback_chain[0], _fallback_chain[1:]
+            alt = call_model(messages, nxt_pid, temperature, _fallback_chain=rest)
+            if not alt.get("error"):
+                alt["fellback_from"] = pid
+                return alt
         return {"error": f"No API key for {prov['label']}. Add it in Settings, "
                          f"or set {prov['env']} and restart."}
 
     # raw history; trimmed PER MODEL inside the loop (each model has its own window)
     raw_messages = messages
 
-    # model order: a user-chosen model (if set) first, then the rest of the LIVE chain
-    chosen = STATE.get("models", {}).get(pid)
+    # model order: a user-chosen model wins; otherwise fall back to this provider's
+    # configured default (e.g. DeepSeek V4 Flash on SiliconFlow) so the primary model
+    # is honoured even though the live catalog is rank-sorted (which would otherwise
+    # float the pricier V4 Pro to the top). Whatever we pick is pinned to the front.
+    chosen = STATE.get("models", {}).get(pid) or DEFAULT_MODEL_BY_PROVIDER.get(pid)
     chain = provider_model_chain(pid)
     if chosen:
-        chain = [chosen] + [m for m in chain if m != chosen]
+        # match case-insensitively against the live chain so a slightly different
+        # capitalisation from the catalog doesn't create a duplicate entry.
+        cl = chosen.lower()
+        chain = [chosen] + [m for m in chain if m.lower() != cl]
 
     # which host to call: the one fetch_models proved works for this key, else the
     # configured one. (Handles SiliconFlow .com vs .cn automatically.)
@@ -956,7 +1070,7 @@ def call_model(messages, provider_id=None):
                 "User-Agent": f"thedawg/{__version__}",
                 "Accept": "application/json",
             }
-            body = {"model": model, "temperature": 0.3, "messages": messages}
+            body = {"model": model, "temperature": temperature, "messages": messages}
             data = _http_post(chat_url, headers, body)
             reply = data["choices"][0]["message"]["content"]
             return {"reply": reply, "model": model, "provider": pid}
@@ -990,7 +1104,7 @@ def call_model(messages, provider_id=None):
                             chat_url = new_url
                             # retry the very same model against the correct host
                             try:
-                                body = {"model": model, "temperature": 0.3, "messages": messages}
+                                body = {"model": model, "temperature": temperature, "messages": messages}
                                 data = _http_post(chat_url, headers, body)
                                 reply = data["choices"][0]["message"]["content"]
                                 return {"reply": reply, "model": model, "provider": pid}
@@ -1013,6 +1127,15 @@ def call_model(messages, provider_id=None):
         except Exception as e:
             last = f"{model}: {e}"
 
+    def _try_fallback(reason):
+        if _fallback_chain:
+            nxt_pid, rest = _fallback_chain[0], _fallback_chain[1:]
+            alt = call_model(messages, nxt_pid, temperature, _fallback_chain=rest)
+            if not alt.get("error"):
+                alt["fellback_from"] = pid
+                return alt
+        return None
+
     if context_hit:
         return {"error": "context_overflow",
                 "detail": "Your current tool plus the build conversation is too large for the "
@@ -1022,6 +1145,9 @@ def call_model(messages, provider_id=None):
                           "70B/120B models have huge windows), or hit ＋ new tool to start fresh — "
                           "your saved work in the library is untouched. You can also save the current "
                           "tool to the library first, then reopen it in a clean session to keep going."}
+    alt = _try_fallback(last)
+    if alt:
+        return alt
     return {"error": f"{prov['label']} chain failed. Last: {last}. "
                      f"Try Settings → refresh models, or pick a different model/provider."}
 
@@ -1314,12 +1440,81 @@ def analyze_with_ast(code):
             self.generic_visit(fn)
     UnusedVisitor().visit(tree)
 
+    # --- self.<attr> read but never assigned anywhere in the SAME class ---
+    # Runs as a shared helper so it also supplements Ruff (which doesn't catch this).
+    if not star_import:
+        issues.extend(_unassigned_self_attrs(tree))
+
     # de-dup and cap so we never flood the model
     seen, uniq = set(), []
     for i in issues:
         if i not in seen:
             seen.add(i); uniq.append(i)
     return uniq[:25]
+
+def _unassigned_self_attrs(tree):
+    """The #1 runtime crash the import-safe smoke test can NEVER catch: a callback or
+    thread reads self.something that no method ever set, so the window opens fine and
+    then throws AttributeError the moment the user clicks. Flag only the high-confidence
+    case; bail out of a class entirely if it does anything dynamic (setattr/getattr,
+    __getattr__/__setattr__) that could create attributes we can't see statically.
+    Returns a list of issue strings (possibly empty). Caller handles de-dup."""
+    import ast
+    out = []
+    for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
+        # CRITICAL false-positive guard: a class that subclasses anything (QMainWindow,
+        # tk.Frame, QWidget, a project base class, etc.) inherits attributes and methods
+        # we cannot see — self.setWindowTitle, self.pack, self.master are all legitimate
+        # there. Flagging them would make the model "fix" correct code, the worst outcome.
+        # So we ONLY analyze classes with no bases, or whose only base is `object`. That
+        # covers plain controller/state classes while staying silent on every widget
+        # subclass. (Decorators or keyword bases like metaclass= also mean: skip.)
+        bases_ok = all(isinstance(b, ast.Name) and b.id == "object" for b in cls.bases)
+        if cls.bases and not bases_ok:
+            continue
+        if getattr(cls, "keywords", None) or cls.decorator_list:
+            continue
+        assigned_attrs, read_attrs = set(), {}
+        dynamic = False
+        # an augmented assignment (self.x += 1) READS self.x before writing it, so a
+        # name that ONLY ever appears as an augassign target was never truly initialized.
+        # Collect those targets so a typo'd `self.valeu += 1` is caught.
+        augained = {}
+        for n in ast.walk(cls):
+            if (isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Attribute)
+                    and isinstance(n.target.value, ast.Name) and n.target.value.id == "self"):
+                augained.setdefault(n.target.attr, n.target.lineno)
+        for n in ast.walk(cls):
+            if (isinstance(n, ast.Attribute)
+                    and isinstance(n.value, ast.Name) and n.value.id == "self"):
+                if isinstance(n.ctx, (ast.Store, ast.Del)):
+                    assigned_attrs.add(n.attr)
+                elif isinstance(n.ctx, ast.Load):
+                    read_attrs.setdefault(n.attr, n.lineno)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) \
+                    and n.func.id in ("setattr", "getattr", "vars"):
+                dynamic = True
+        # an attr whose ONLY assignment is an augmented one (self.x += …) was never
+        # initialized: treat it as a read of an unassigned attr, not an assignment.
+        for attr, ln in augained.items():
+            assigned_attrs.discard(attr)
+            read_attrs.setdefault(attr, ln)
+        if any(m for m in cls.body
+               if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and m.name in ("__getattr__", "__setattr__", "__getattribute__")):
+            dynamic = True
+        if dynamic:
+            continue
+        for m in cls.body:
+            if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                assigned_attrs.add(m.name)
+        assigned_attrs |= {"__class__", "__dict__", "__doc__", "__module__"}
+        for attr, ln in read_attrs.items():
+            if attr not in assigned_attrs:
+                out.append(f"L{ln} attribute: self.{attr} is read but never assigned in "
+                           f"class '{cls.name}' (AttributeError at runtime — set it in "
+                           f"__init__, or fix the name)")
+    return out
 
 def code_map(code):
     """Build a compact structural map of the current tool: imports, top-level
@@ -1379,7 +1574,20 @@ def analyze_code(code):
     Returns {"issues": [...], "engine": "ruff"|"ast", "clean": bool}."""
     ruff_issues = analyze_with_ruff(code)
     if ruff_issues is not None:
-        return {"issues": ruff_issues, "engine": "ruff", "clean": not ruff_issues}
+        # Ruff is fast and deep on style/logic but does NOT track instance attributes.
+        # Supplement it with our high-confidence self.<attr>-never-assigned pass so the
+        # most common runtime AttributeError is caught regardless of which engine runs.
+        supplemental = []
+        try:
+            import ast as _ast
+            tree = _ast.parse(code)
+            if not any(isinstance(n, _ast.ImportFrom) and any(a.name == "*" for a in n.names)
+                       for n in _ast.walk(tree)):
+                supplemental = _unassigned_self_attrs(tree)
+        except SyntaxError:
+            pass
+        merged = ruff_issues + [s for s in supplemental if s not in ruff_issues]
+        return {"issues": merged, "engine": "ruff", "clean": not merged}
     ast_issues = analyze_with_ast(code)
     return {"issues": ast_issues, "engine": "ast", "clean": not ast_issues}
 
@@ -1452,7 +1660,8 @@ def smoke_test(code):
             if out.startswith("DEP_MISSING:"):
                 note = "needs a package (use the deps button)"
                 if tk:
-                    note = f"needs the {tk['label']} toolkit — apt: {tk['apt']}"
+                    hint = tk.get("apt_hint") or tk.get("pip") or "pip install"
+                    note = f"needs the {tk['label']} toolkit — {hint}"
                 checks.append(("imports", True, note))
             elif out.startswith("TOOLKIT_EXIT:") or (tk and any(s in blob for s in ENV_SIGNS)):
                 # the tool bailed gracefully because the toolkit/display isn't on THIS box,
@@ -1483,8 +1692,8 @@ def smoke_test(code):
             # and let the loop decide. Genuine correctness issues (undefined name, bad
             # call) are worth a fix round.
             serious = [i for i in analysis["issues"]
-                       if any(k in i for k in ("undefined", "call:", "F821", "F811", "F706",
-                                               "F702", "E9", "syntax"))]
+                       if any(k in i for k in ("undefined", "call:", "attribute:", "F821", "F811",
+                                               "F706", "F702", "E9", "syntax"))]
             report = (f"Whole-code analysis ({analysis['engine']}) found:\n  - "
                       + "\n  - ".join(analysis["issues"]))
             if serious:
@@ -1531,7 +1740,9 @@ def chat_with_autotest(messages, provider_id=None):
             convo = convo[:insert_at] + [{"role": "system", "content": cmap}] + convo[insert_at:]
 
     rounds = []
-    res = call_model(convo, provider_id)
+    # Lower temperature on code generation: more deterministic, fewer hallucinated
+    # APIs and careless slips. Reasoning paths (intake/review) keep the default 0.3.
+    res = call_model(convo, provider_id, temperature=BUILD_TEMPERATURE)
     if res.get("error"):
         return res
 
@@ -1576,7 +1787,7 @@ def chat_with_autotest(messages, provider_id=None):
             {"role": "assistant", "content": res["reply"]},
             {"role": "user", "content": fix_msg},
         ]
-        nxt = call_model(convo, provider_id)
+        nxt = call_model(convo, provider_id, temperature=BUILD_TEMPERATURE)
         if nxt.get("error"):
             res["autotest"] = {"ran": True, "passed": False, "rounds": rounds,
                                "note": "auto-fix call failed: " + nxt["error"]}
@@ -1793,12 +2004,12 @@ def run_code(code, args, confirmed, name="tool"):
                             f"  pip install {tk['pip']}\n"
                             f"(or click the ⬇ deps button, which does it for you).")
                 elif tk["module"] == "tkinter" and IS_LINUX:
-                    hint = ("\n[TheDawg] Tkinter ships with Python on Windows / macOS, but on some "
-                            "Linux distros it's split out. Install:\n"
-                            "  sudo apt install python3-tk    (Debian / Ubuntu / Mint)\n"
-                            "  sudo dnf install python3-tkinter   (Fedora)")
+                    hint = ("\n[TheDawg] Tkinter is split out from Python on Debian-based distros "
+                            "(including Kali). Install it:\n"
+                            "  sudo apt install python3-tk     (Kali / Debian / Ubuntu / Mint)\n"
+                            "  sudo dnf install python3-tkinter (Fedora)")
                 else:
-                    hint = f"\n[TheDawg] A required module is missing — see the traceback above."
+                    hint = "\n[TheDawg] A required module is missing — see the traceback above."
             elif any(s in early_err for s in ("cannot open display", "no display name",
                       "Unable to init server", "QXcbConnection", "no Qt platform plugin",
                       "could not open display", "couldn't connect to display", "DISPLAY")):
@@ -1870,33 +2081,27 @@ def save_tool(code, name, kind):
         readme = d / "README.md"
         if not readme.exists():
             launch_lin = f"python3 {name}.py"
-            launch_win = f"python {name}.py"
             pip_note = ""
             if tk and tk.get("pip"):
                 pip_note = f"\n\nNeeds: `pip install {tk['pip']}`"
+            elif tk and tk.get("apt_hint"):
+                pip_note = f"\n\nNeeds: `{tk['apt_hint']}`"
             readme.write_text(
-                f"# {name}\n\nA cross-platform graphical tool built with TheDawg "
-                f"(runs on Windows, Linux, and macOS).{pip_note}\n\n"
-                f"## Usage\n\n"
-                f"Linux / macOS:\n\n```bash\n{launch_lin}\n```\n\n"
-                f"Windows:\n\n```powershell\n{launch_win}\n```\n",
+                f"# {name}\n\nA Linux graphical tool built with TheDawg "
+                f"(tested on Kali / Phosh / KDE Plasma).{pip_note}\n\n"
+                f"## Usage\n\n```bash\n{launch_lin}\n```\n",
                 encoding="utf-8")
-        # platform-specific launcher so a GUI tool appears in the menu
+        # .desktop entry so a GUI tool appears in the app menu / grid. StartupWMClass
+        # helps Phosh and KDE bind the running window to this entry.
         if tk:
-            if IS_WIN:
-                # .bat wrapper that pythonw the script (no console window for GUI tools)
-                bat = d / (name + ".bat")
-                bat.write_text(
-                    f'@echo off\r\nstart "" pythonw "{pyp}" %*\r\n',
-                    encoding="utf-8")
-            else:
-                # .desktop entry — picked up by Linux desktop environments; harmless on macOS
-                dt = d / (name + ".desktop")
-                dt.write_text(
-                    "[Desktop Entry]\nType=Application\n"
-                    f"Name={name}\nComment=Built with TheDawg\n"
-                    f"Exec=python3 {pyp}\nTerminal=false\nCategories=Utility;Development;\n",
-                    encoding="utf-8")
+            dt = d / (name + ".desktop")
+            dt.write_text(
+                "[Desktop Entry]\nType=Application\n"
+                f"Name={name}\nComment=Built with TheDawg\n"
+                f"Exec=python3 {pyp}\nTerminal=false\n"
+                f"StartupWMClass={name}\nStartupNotify=true\n"
+                "Categories=Utility;Development;\n",
+                encoding="utf-8")
         return {"path": str(d), "toolkit": tk["label"] if tk else None}
     else:
         d = base / "forge"
@@ -1996,93 +2201,10 @@ esac
 echo "installed {name}. launch from your app grid (Linux), or run: {name}"
 """
 
-def _install_ps1(user, repo, branch, name, pip_deps=""):
-    r"""Windows installer (PowerShell) — one-line install/update:
-       iwr -useb https://raw.githubusercontent.com/<user>/<repo>/<branch>/install.ps1 | iex
-    Installs under %LOCALAPPDATA%\<repo>, a .bat launcher in the user's path, and a
-    Start Menu shortcut. Installs pip deps for the current user."""
-    pip_block = ""
-    if pip_deps.strip():
-        pip_block = f'''
-# install python deps
-$pipPkgs = "{pip_deps.strip()}"
-Write-Host "installing python deps: $pipPkgs"
-try {{
-  & python -m pip install --user $pipPkgs.Split(" ") 2>&1 | Out-Null
-}} catch {{
-  Write-Warning "pip install failed for $pipPkgs — install manually"
-}}
-'''
-    return f"""# {repo} installer (Windows / PowerShell)
-# One-line install/update:
-#   iwr -useb https://raw.githubusercontent.com/{user}/{repo}/{branch}/install.ps1 | iex
-$ErrorActionPreference = "Stop"
-$repo   = "{user}/{repo}"
-$branch = "{branch}"
-$srcDir = Join-Path $env:LOCALAPPDATA "{repo}"
-$binDir = Join-Path $env:LOCALAPPDATA "Programs\\TheDawg-tools"
-$launch = Join-Path $binDir "{name}.bat"
-$startMenu = Join-Path $env:APPDATA "Microsoft\\Windows\\Start Menu\\Programs"
-
-# 1. python
-try {{ $pyv = & python -c "import sys; print('%d.%d' % sys.version_info[:2])" }}
-catch {{ Write-Error "python is required (>= 3.8). Install from python.org or the Microsoft Store."; exit 1 }}
-Write-Host "python $pyv ✓"
-
-{pip_block}
-
-# 2. fetch source
-New-Item -ItemType Directory -Force -Path $srcDir, $binDir | Out-Null
-$selfDir = if ($PSScriptRoot) {{ $PSScriptRoot }} else {{ "" }}
-if ($selfDir -and (Test-Path (Join-Path $selfDir "{name}.py"))) {{
-  Copy-Item -Force (Join-Path $selfDir "{name}.py") $srcDir
-  if (Test-Path (Join-Path $selfDir "requirements.txt")) {{
-    Copy-Item -Force (Join-Path $selfDir "requirements.txt") $srcDir
-  }}
-}} else {{
-  $tarball = "https://codeload.github.com/$repo/zip/refs/heads/$branch"
-  $tmp = New-TemporaryFile
-  Invoke-WebRequest -UseBasicParsing $tarball -OutFile "$tmp.zip"
-  $stage = New-Item -ItemType Directory -Force -Path (Join-Path $env:TEMP "{name}-stage-$([System.Guid]::NewGuid().ToString('N'))")
-  Expand-Archive -Path "$tmp.zip" -DestinationPath $stage -Force
-  $inner = Get-ChildItem $stage | Select-Object -First 1
-  Copy-Item -Recurse -Force (Join-Path $inner.FullName "*") $srcDir
-  Remove-Item $stage -Recurse -Force
-  Remove-Item "$tmp.zip" -Force
-}}
-
-# 3. launcher (.bat that pythonw's the script for a GUI tool)
-$pyExe = "pythonw"   # no console window for GUI
-$script = Join-Path $srcDir "{name}.py"
-@"
-@echo off
-start "" $pyExe "$script" %*
-"@ | Set-Content -Encoding ASCII $launch
-
-# 4. add binDir to user PATH (idempotent)
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if (-not ($userPath -split ";" -contains $binDir)) {{
-  [Environment]::SetEnvironmentVariable("Path", ($userPath.TrimEnd(';') + ";" + $binDir), "User")
-  Write-Host "added $binDir to your user PATH (open a new terminal to pick it up)"
-}}
-
-# 5. Start Menu shortcut
-try {{
-  $ws = New-Object -ComObject WScript.Shell
-  $lnk = $ws.CreateShortcut((Join-Path $startMenu "{name}.lnk"))
-  $lnk.TargetPath = $launch
-  $lnk.WorkingDirectory = $srcDir
-  $lnk.Description = "{repo} — built with TheDawg"
-  $lnk.Save()
-}} catch {{ Write-Warning "couldn't create Start Menu shortcut: $_" }}
-
-Write-Host "`n  installed {name}. Launch from the Start Menu, or run: {name}`n" -ForegroundColor Green
-"""
-
 def write_github_repo(code, name, gh, details):
     """Write a complete polished repo into ~/thedawg-tools/github/<repo>/.
-    Includes BOTH install.sh (Linux + macOS, curl|bash) and install.ps1 (Windows, iwr|iex)
-    so a release works on every OS the tool itself targets."""
+    Includes install.sh (Linux, curl|bash) so a release installs cleanly on Kali
+    (Phosh & KDE Plasma) and other Linux desktops."""
     name = re.sub(r"[^A-Za-z0-9_\-]", "_", (name or "tool")).strip("_") or "tool"
     user = details.get("username", "USER")
     repo = re.sub(r"[^A-Za-z0-9_.\-]", "-", details.get("repo", name)) or name
@@ -2104,14 +2226,11 @@ def write_github_repo(code, name, gh, details):
 
     # README (AI-generated, with fallback)
     fallback_readme = (
-        f"# {repo}\n\n{gh.get('description', 'A cross-platform graphical Python tool built with TheDawg.')}\n\n"
-        f"Runs natively on **Windows, Linux, and macOS** from the same single-file script.\n\n"
+        f"# {repo}\n\n{gh.get('description', 'A Linux graphical Python tool built with TheDawg.')}\n\n"
+        f"A native **Linux** GUI tool — tested on Kali (Phosh & KDE Plasma).\n\n"
         f"## Install\n\n"
-        f"**Linux / macOS** (bash):\n\n"
         f"```bash\ncurl -fsSL https://raw.githubusercontent.com/{user}/{repo}/{branch}/install.sh | bash\n```\n\n"
-        f"**Windows** (PowerShell):\n\n"
-        f"```powershell\niwr -useb https://raw.githubusercontent.com/{user}/{repo}/{branch}/install.ps1 | iex\n```\n\n"
-        f"## Usage\n\nLaunch from the Start Menu (Windows) or your app grid (Linux), or run `{name}` in a terminal.\n"
+        f"## Usage\n\nLaunch from your app grid / launcher, or run `{name}` in a terminal.\n"
     )
     readme = gh.get("readme") or fallback_readme
     with open(os.path.join(d, "README.md"), "w", encoding="utf-8") as f:
@@ -2133,7 +2252,7 @@ def write_github_repo(code, name, gh, details):
     pip_deps = " ".join(line.split("#", 1)[0].strip()
                         for line in reqs.splitlines() if line.strip() and not line.startswith("#"))
 
-    # install.sh (Linux + macOS)
+    # install.sh (Linux)
     ish = os.path.join(d, "install.sh")
     with open(ish, "w", encoding="utf-8", newline="\n") as f:
         f.write(_install_sh(user, repo, branch, name, pip_deps))
@@ -2141,12 +2260,8 @@ def write_github_repo(code, name, gh, details):
         try: os.chmod(ish, 0o755)
         except Exception: pass
 
-    # install.ps1 (Windows)
-    ips = os.path.join(d, "install.ps1")
-    with open(ips, "w", encoding="utf-8", newline="\r\n") as f:
-        f.write(_install_ps1(user, repo, branch, name, pip_deps))
-
-    # .desktop entry — for Linux users to drop into ~/.local/share/applications
+    # .desktop entry — for Linux users to drop into ~/.local/share/applications.
+    # StartupWMClass helps Phosh/KDE bind the running window to this entry's icon.
     desktop = (
         "[Desktop Entry]\n"
         "Type=Application\n"
@@ -2154,6 +2269,8 @@ def write_github_repo(code, name, gh, details):
         f"Comment={gh.get('description', repo + ' — built with TheDawg')}\n"
         f"Exec=python3 %h/.local/share/{repo}/{name}.py\n"
         "Terminal=false\n"
+        f"StartupWMClass={name}\n"
+        "StartupNotify=true\n"
         "Categories=Utility;Development;\n"
     )
     with open(os.path.join(d, name + ".desktop"), "w", encoding="utf-8") as f:
@@ -2180,20 +2297,17 @@ def write_github_repo(code, name, gh, details):
         "files": sorted(os.listdir(d)),
         "push": push,
         "install_line_posix": f"curl -fsSL https://raw.githubusercontent.com/{user}/{repo}/{branch}/install.sh | bash",
-        "install_line_win":   f"iwr -useb https://raw.githubusercontent.com/{user}/{repo}/{branch}/install.ps1 | iex",
     }
 
 # --------------------------------------------------------------------------
-# PYINSTALLER  -- pack a tool into a standalone executable for THIS platform
+# PYINSTALLER  -- pack a tool into a standalone Linux binary
 # --------------------------------------------------------------------------
-# Cross-compilation is hard (PyInstaller bakes the host Python + libs into the
-# output, so a Windows .exe really needs to be built on Windows). Instead of
-# pretending otherwise, TheDawg builds for whichever OS it's running on and
-# tells the user clearly: build on each target machine.
+# TheDawg builds a single-file binary for Linux via PyInstaller in its managed
+# venv. (No cross-compilation: PyInstaller bakes the host Python + libs into the
+# output, so a binary built here runs on Linux only — which is the target.)
 def build_executable(code, name, console=False):
-    """Run PyInstaller in TheDawg's managed venv to produce a single-file binary
-    for the CURRENT OS. Returns the path to the artefact + a tail of the build log.
-    Reports `target` so the UI can say 'Windows .exe' / 'Linux binary' / 'macOS app'."""
+    """Run PyInstaller in TheDawg's managed venv to produce a single-file Linux
+    binary. Returns the path to the artefact + a tail of the build log."""
     name = re.sub(r"[^A-Za-z0-9_\-]", "_", (name or "tool")).strip("_") or "tool"
     if not code or not code.strip():
         return {"ok": False, "log": "no code to build"}
@@ -2234,9 +2348,9 @@ def build_executable(code, name, console=False):
     for p in (dist_dir, build_dir, spec_dir):
         p.mkdir(exist_ok=True)
 
-    # 3) build args: --onefile bakes everything into one binary, --windowed hides the
-    #    console for GUI tools (matters on Windows + macOS), --clean wipes PyInstaller's
-    #    cache so re-builds always reflect the latest code
+    # 3) build args: --onefile bakes everything into one binary, --windowed drops the
+    #    controlling console for GUI tools, --clean wipes PyInstaller's cache so
+    #    re-builds always reflect the latest code
     args = [venv_py, "-m", "PyInstaller", "--onefile", "--clean", "--noconfirm",
             "--name", name,
             "--distpath", str(dist_dir),
@@ -2244,15 +2358,10 @@ def build_executable(code, name, console=False):
             "--specpath", str(spec_dir)]
     if not console:
         args.append("--windowed")
-    # bundle the bundled icon if it exists next to TheDawg (nice touch for distribution)
-    icon_candidates = [
-        Path(HERE) / "assets" / ("icon.ico" if IS_WIN else ("icon.icns" if IS_MAC else "icon.png")),
-        Path(HERE) / "assets" / "icon.png",
-    ]
-    for ic in icon_candidates:
-        if ic.exists():
-            args += ["--icon", str(ic)]
-            break
+    # bundle the Dawg icon if present (PyInstaller takes a PNG on Linux)
+    icon_png = Path(HERE) / "assets" / "icon.png"
+    if icon_png.exists():
+        args += ["--icon", str(icon_png)]
     args.append(str(py_file))
 
     try:
@@ -2265,12 +2374,7 @@ def build_executable(code, name, console=False):
         return {"ok": False, "log": f"PyInstaller crashed: {e}"}
 
     # 4) find the artefact
-    if IS_WIN:
-        out_name, target = name + ".exe", "Windows .exe"
-    elif IS_MAC:
-        out_name, target = name, "macOS binary"
-    else:
-        out_name, target = name, "Linux binary"
+    out_name, target = name, "Linux binary"
     out_path = dist_dir / out_name
     if proc.returncode == 0 and out_path.exists():
         size_mb = round(out_path.stat().st_size / (1024 * 1024), 1)
@@ -2435,6 +2539,7 @@ class Handler(BaseHTTPRequestHandler):
                 "hasKey": bool(STATE["keys"].get(STATE["provider"])),
                 "autotest": AUTOTEST_MAX_ROUNDS,
                 "version": __version__,
+                "desktop": detect_desktop_env(),
             })
         elif self.path == "/api/log":
             self._send(200, {"log": render_log(full=True), "runs": len(SESSION_LOG)})
@@ -2571,7 +2676,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"ok": False, "log": f"build crashed: {e}"})
         elif self.path == "/api/platform":
             self._send(200, {"os": platform.system(), "python": platform.python_version(),
-                             "is_win": IS_WIN, "is_mac": IS_MAC, "is_linux": IS_LINUX})
+                             "is_win": IS_WIN, "is_mac": IS_MAC, "is_linux": IS_LINUX,
+                             "desktop": detect_desktop_env()})
         elif self.path == "/api/polish":
             convo = data.get("messages", [])
             self._send(200, polish_round(data.get("code", ""), convo, data.get("provider")))
@@ -2634,14 +2740,21 @@ def launch_app_window(url):
         if not resolved or not os.path.exists(resolved):
             continue
         try:
+            argv = [resolved, f"--app={url}",
+                    f"--user-data-dir={app_data}",
+                    "--no-first-run", "--no-default-browser-check",
+                    # let TheDawg play its startup sound without needing a user gesture first.
+                    # Chromium-family flag — safe on Chrome / Edge / Brave / Vivaldi / Chromium.
+                    "--autoplay-policy=no-user-gesture-required",
+                    "--window-size=1280,860"]
+            # On Linux, set the window's WM class / Wayland app_id to "thedawg" so it
+            # matches StartupWMClass in the .desktop entry. Without this the running
+            # window shows a generic Chromium icon in the KDE Plasma task switcher and
+            # the Phosh (mobile GNOME) overview instead of the Dawg icon.
+            if IS_LINUX:
+                argv.insert(1, "--class=thedawg")
             subprocess.Popen(
-                [resolved, f"--app={url}",
-                 f"--user-data-dir={app_data}",
-                 "--no-first-run", "--no-default-browser-check",
-                 # let TheDawg play its startup sound without needing a user gesture first.
-                 # Chromium-family flag — safe on Chrome / Edge / Brave / Vivaldi / Chromium.
-                 "--autoplay-policy=no-user-gesture-required",
-                 "--window-size=1280,860"],
+                argv,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return os.path.basename(resolved)
         except Exception:
@@ -2658,7 +2771,7 @@ def main():
     url = f"http://{HOST}:{port}"
     srv = ThreadingHTTPServer((HOST, port), Handler)
     print(f"\n  TheDawg v{__version__}  —  {url}")
-    print(f"  cross-platform Python toolsmith  ·  running on {platform.system()}")
+    print(f"  Linux Python toolsmith  ·  running on {platform.system()}")
     have = [PROVIDERS[pid]["label"] for pid in PROVIDERS if STATE["keys"].get(pid)]
     if have:
         print(f"  keys loaded for: {', '.join(have)}")

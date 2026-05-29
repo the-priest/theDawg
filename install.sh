@@ -60,7 +60,9 @@ ok "python3 $PYV"
 
 # ---- fetch source ----
 say "fetching source"
-mkdir -p "$SRC_DIR" "$BIN_DIR" "$APP_DIR" "$ICON_DIR/256x256/apps" "$ICON_DIR/128x128/apps"
+mkdir -p "$SRC_DIR" "$BIN_DIR" "$APP_DIR" \
+  "$ICON_DIR/512x512/apps" "$ICON_DIR/256x256/apps" \
+  "$ICON_DIR/128x128/apps" "$ICON_DIR/scalable/apps"
 SELF_DIR="$( cd "$( dirname "${BASH_SOURCE[0]:-$0}" )" 2>/dev/null && pwd || true )"
 if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/thedawg.py" ]; then
   step "using local copy at $SELF_DIR"
@@ -103,32 +105,39 @@ EOSH
 chmod +x "$LAUNCHER"
 ok "launcher: $LAUNCHER"
 
-# ---- icon + .desktop (Linux only) ----
-if [ -f "$SRC_DIR/assets/icon-256.png" ]; then
-  cp -f "$SRC_DIR/assets/icon-256.png" "$ICON_DIR/256x256/apps/thedawg.png"
-fi
-if [ -f "$SRC_DIR/assets/icon-128.png" ]; then
-  cp -f "$SRC_DIR/assets/icon-128.png" "$ICON_DIR/128x128/apps/thedawg.png"
-fi
+# ---- icons (Linux) — install every size + the scalable SVG so Phosh (mobile GNOME
+#      on the OnePlus 6) and KDE Plasma both pick a crisp icon at any DPI ----
+[ -f "$SRC_DIR/assets/icon-512.png" ] && cp -f "$SRC_DIR/assets/icon-512.png" "$ICON_DIR/512x512/apps/thedawg.png"
+[ -f "$SRC_DIR/assets/icon-256.png" ] && cp -f "$SRC_DIR/assets/icon-256.png" "$ICON_DIR/256x256/apps/thedawg.png"
+[ -f "$SRC_DIR/assets/icon-128.png" ] && cp -f "$SRC_DIR/assets/icon-128.png" "$ICON_DIR/128x128/apps/thedawg.png"
+[ -f "$SRC_DIR/assets/icon.svg" ]     && cp -f "$SRC_DIR/assets/icon.svg"     "$ICON_DIR/scalable/apps/thedawg.svg"
 
 if [ "$OS" = "Linux" ]; then
   say "registering app menu entry"
+  # Terminal=false: Phosh's app grid has no terminal wired by default, so a
+  # Terminal=true entry silently fails to launch there. TheDawg backgrounds its
+  # own local server and opens a browser window, so it needs no terminal.
+  # StartupWMClass ties the running window back to this entry so the Dawg icon
+  # shows in the KDE task switcher / Phosh overview instead of a generic one.
   cat > "$APP_DIR/thedawg.desktop" <<EODESKTOP
 [Desktop Entry]
 Type=Application
 Name=TheDawg
 GenericName=AI Python Toolsmith
-Comment=Build cross-platform Python GUI tools with AI
+Comment=Build Linux Python GUI tools with AI
 Exec=$LAUNCHER
 Icon=thedawg
-Terminal=true
+Terminal=false
 Categories=Development;Utility;
-StartupNotify=false
-Keywords=AI;Python;GUI;Tools;PyInstaller;
+StartupNotify=true
+StartupWMClass=thedawg
+Keywords=AI;Python;GUI;Tools;
 EODESKTOP
+  chmod 644 "$APP_DIR/thedawg.desktop"
   update-desktop-database "$APP_DIR" >/dev/null 2>&1 || true
-  gtk-update-icon-cache "$ICON_DIR" >/dev/null 2>&1 || true
-  ok "app menu: TheDawg (search your launcher)"
+  gtk-update-icon-cache -f -t "$ICON_DIR" >/dev/null 2>&1 || true   # GTK / Phosh
+  kbuildsycoca6 >/dev/null 2>&1 || kbuildsycoca5 >/dev/null 2>&1 || true  # KDE Plasma menu cache
+  ok "app menu: TheDawg (search your launcher / app grid)"
 fi
 
 # ---- PATH ----
