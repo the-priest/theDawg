@@ -2,7 +2,7 @@
 #
 # TheDawg installer  (Linux + macOS)
 # ----------------------------------
-# One-line install (paste in a terminal):
+# One-line install / update (paste in a terminal):
 #
 #   curl -fsSL https://raw.githubusercontent.com/the-priest/theDawg/main/install.sh | bash
 #
@@ -10,11 +10,14 @@
 #
 # What it does (no root needed — everything under $HOME):
 #   - checks for python3 (>= 3.8)
-#   - fetches the repo into ~/.local/share/thedawg          (git, or tarball fallback)
-#   - drops a `thedawg` launcher into ~/.local/bin          (so you can just type `thedawg`)
-#   - installs an icon + a .desktop entry on Linux           (appears in your app menu)
+#   - fetches the LATEST repo into ~/.local/share/thedawg     (git, or tarball fallback)
+#   - drops a `thedawg` launcher into ~/.local/bin            (so you can just type `thedawg`)
+#   - installs icons + a .desktop entry on Linux              (appears in your app menu)
 #   - makes sure ~/.local/bin is on your PATH
 #   - explains how to set the API key for your provider of choice
+#
+# Running it again = updating. It always pulls the latest from GitHub unless you
+# explicitly run a local ./install.sh from a separate checkout.
 #
 set -euo pipefail
 
@@ -25,6 +28,7 @@ BIN_DIR="$HOME/.local/bin"
 ICON_DIR="$HOME/.local/share/icons/hicolor"
 APP_DIR="$HOME/.local/share/applications"
 LAUNCHER="$BIN_DIR/thedawg"
+TARBALL="https://codeload.github.com/$REPO/tar.gz/refs/heads/$BRANCH"
 
 OS="$(uname -s)"
 
@@ -41,7 +45,7 @@ warn() { printf "  ${RED}\xe2\x9a\xa0${R} %b\n" "$1"; }
 step() { printf "  ${GREY}\xe2\x80\xa6 %b${R}\n" "$1"; }
 
 printf "\n${AMBER}${B}  TheDawg installer${R}  ${GREY}\xe2\x80\x94 ${REPO}${R}\n"
-printf "  ${GREY}cross-platform Python toolsmith${R}\n\n"
+printf "  ${GREY}AI Python GUI toolsmith for Linux & macOS${R}\n\n"
 
 # ---- python ----
 say "checking python"
@@ -58,41 +62,72 @@ fi
 PYV=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
 ok "python3 $PYV"
 
-# ---- fetch source ----
-say "fetching source"
+# ---- decide the source ----
+# A genuine local checkout means: this script exists as a real file on disk, sits
+# next to thedawg.py, AND that folder is NOT the install dir itself.
+#
+# When run via `curl | bash`, the script has no on-disk path, so [ -f "$SCRIPT" ]
+# is false and we ALWAYS fall through to GitHub. This is the fix for the old bug
+# where piping from inside ~/.local/share/thedawg made it copy the folder onto
+# itself ("are the same file") and silently skip the update.
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+LOCAL_SRC=""
+if [ -f "$SCRIPT_PATH" ]; then
+  CAND="$( cd "$( dirname "$SCRIPT_PATH" )" 2>/dev/null && pwd || true )"
+  if [ -n "$CAND" ] && [ -f "$CAND/thedawg.py" ] && [ "$CAND" != "$SRC_DIR" ]; then
+    LOCAL_SRC="$CAND"
+  fi
+fi
+
 mkdir -p "$SRC_DIR" "$BIN_DIR" "$APP_DIR" \
   "$ICON_DIR/512x512/apps" "$ICON_DIR/256x256/apps" \
   "$ICON_DIR/128x128/apps" "$ICON_DIR/scalable/apps"
-SELF_DIR="$( cd "$( dirname "${BASH_SOURCE[0]:-$0}" )" 2>/dev/null && pwd || true )"
-if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/thedawg.py" ]; then
-  step "using local copy at $SELF_DIR"
-  cp -rf "$SELF_DIR/thedawg.py" "$SELF_DIR/ui" "$SELF_DIR/assets" "$SRC_DIR/"
-  mkdir -p "$SRC_DIR/sounds"
-  [ -d "$SELF_DIR/sounds" ] && cp -rf "$SELF_DIR/sounds/." "$SRC_DIR/sounds/"
-  [ -f "$SELF_DIR/README.md" ] && cp -f "$SELF_DIR/README.md" "$SRC_DIR/" || true
-  [ -f "$SELF_DIR/LICENSE" ]   && cp -f "$SELF_DIR/LICENSE"   "$SRC_DIR/" || true
-else
-  if command -v git >/dev/null 2>&1; then
-    if [ -d "$SRC_DIR/.git" ]; then
-      step "pulling latest"
-      git -C "$SRC_DIR" pull --ff-only --quiet || true
-    else
-      step "git clone $REPO"
-      rm -rf "$SRC_DIR"
-      git clone --depth 1 -b "$BRANCH" "https://github.com/$REPO.git" "$SRC_DIR" --quiet
-    fi
+
+fetch_tarball() {
+  step "downloading latest tarball"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$TARBALL" | tar xz -C "$SRC_DIR" --strip-components=1
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO- "$TARBALL" | tar xz -C "$SRC_DIR" --strip-components=1
   else
-    TARBALL="https://codeload.github.com/$REPO/tar.gz/refs/heads/$BRANCH"
-    step "downloading tarball"
-    if command -v curl >/dev/null 2>&1; then
-      curl -fsSL "$TARBALL" | tar xz -C "$SRC_DIR" --strip-components=1
-    elif command -v wget >/dev/null 2>&1; then
-      wget -qO- "$TARBALL" | tar xz -C "$SRC_DIR" --strip-components=1
-    else
-      warn "need git, curl, or wget"
-      exit 1
-    fi
+    warn "need git, curl, or wget to fetch the source"
+    exit 1
   fi
+}
+
+say "fetching source"
+if [ -n "$LOCAL_SRC" ]; then
+  step "installing from local checkout: $LOCAL_SRC"
+  cp -rf "$LOCAL_SRC/thedawg.py" "$LOCAL_SRC/ui" "$LOCAL_SRC/assets" "$SRC_DIR/"
+  mkdir -p "$SRC_DIR/sounds"
+  [ -d "$LOCAL_SRC/sounds" ] && cp -rf "$LOCAL_SRC/sounds/." "$SRC_DIR/sounds/" || true
+  [ -f "$LOCAL_SRC/README.md" ] && cp -f "$LOCAL_SRC/README.md" "$SRC_DIR/" || true
+  [ -f "$LOCAL_SRC/LICENSE" ]   && cp -f "$LOCAL_SRC/LICENSE"   "$SRC_DIR/" || true
+elif [ -d "$SRC_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+  step "updating existing checkout (git)"
+  git -C "$SRC_DIR" fetch --depth 1 origin "$BRANCH" --quiet || true
+  git -C "$SRC_DIR" reset --hard "origin/$BRANCH" --quiet \
+    || git -C "$SRC_DIR" pull --ff-only --quiet || true
+elif [ -f "$SRC_DIR/thedawg.py" ]; then
+  # existing non-git install — overlay latest code, keep your sounds/config in place
+  fetch_tarball
+elif command -v git >/dev/null 2>&1; then
+  step "git clone $REPO"
+  tmp="$(mktemp -d)"
+  if git clone --depth 1 -b "$BRANCH" "https://github.com/$REPO.git" "$tmp" --quiet; then
+    cp -rf "$tmp/." "$SRC_DIR/"
+    rm -rf "$tmp"
+  else
+    rm -rf "$tmp"
+    fetch_tarball
+  fi
+else
+  fetch_tarball
+fi
+
+if [ ! -f "$SRC_DIR/thedawg.py" ]; then
+  warn "source fetch failed — $SRC_DIR/thedawg.py is missing"
+  exit 1
 fi
 ok "source at $SRC_DIR"
 
@@ -105,8 +140,8 @@ EOSH
 chmod +x "$LAUNCHER"
 ok "launcher: $LAUNCHER"
 
-# ---- icons (Linux) — install every size + the scalable SVG so Phosh (mobile GNOME
-#      on the OnePlus 6) and KDE Plasma both pick a crisp icon at any DPI ----
+# ---- icons (Linux): install every size + the scalable SVG so any desktop
+#      environment (KDE Plasma, GNOME, Phosh, XFCE…) picks a crisp icon ----
 [ -f "$SRC_DIR/assets/icon-512.png" ] && cp -f "$SRC_DIR/assets/icon-512.png" "$ICON_DIR/512x512/apps/thedawg.png"
 [ -f "$SRC_DIR/assets/icon-256.png" ] && cp -f "$SRC_DIR/assets/icon-256.png" "$ICON_DIR/256x256/apps/thedawg.png"
 [ -f "$SRC_DIR/assets/icon-128.png" ] && cp -f "$SRC_DIR/assets/icon-128.png" "$ICON_DIR/128x128/apps/thedawg.png"
@@ -114,17 +149,15 @@ ok "launcher: $LAUNCHER"
 
 if [ "$OS" = "Linux" ]; then
   say "registering app menu entry"
-  # Terminal=false: Phosh's app grid has no terminal wired by default, so a
-  # Terminal=true entry silently fails to launch there. TheDawg backgrounds its
-  # own local server and opens a browser window, so it needs no terminal.
-  # StartupWMClass ties the running window back to this entry so the Dawg icon
-  # shows in the KDE task switcher / Phosh overview instead of a generic one.
+  # Terminal=false because TheDawg backgrounds its own local server and opens a
+  # browser app window — no terminal needed. StartupWMClass ties the window back
+  # to this entry so the Dawg icon shows in the task switcher / overview.
   cat > "$APP_DIR/thedawg.desktop" <<EODESKTOP
 [Desktop Entry]
 Type=Application
 Name=TheDawg
 GenericName=AI Python Toolsmith
-Comment=Build Linux Python GUI tools with AI
+Comment=Build Python GUI tools with AI
 Exec=$LAUNCHER
 Icon=thedawg
 Terminal=false
@@ -135,8 +168,8 @@ Keywords=AI;Python;GUI;Tools;
 EODESKTOP
   chmod 644 "$APP_DIR/thedawg.desktop"
   update-desktop-database "$APP_DIR" >/dev/null 2>&1 || true
-  gtk-update-icon-cache -f -t "$ICON_DIR" >/dev/null 2>&1 || true   # GTK / Phosh
-  kbuildsycoca6 >/dev/null 2>&1 || kbuildsycoca5 >/dev/null 2>&1 || true  # KDE Plasma menu cache
+  gtk-update-icon-cache -f -t "$ICON_DIR" >/dev/null 2>&1 || true
+  kbuildsycoca6 >/dev/null 2>&1 || kbuildsycoca5 >/dev/null 2>&1 || true
   ok "app menu: TheDawg (search your launcher / app grid)"
 fi
 
@@ -154,11 +187,11 @@ case ":$PATH:" in
 esac
 
 # ---- key setup hint ----
-printf "\n${AMBER}${B}  set your API key${R}  (one of these, before launching)\n"
+printf "\n${AMBER}${B}  set your API key${R}  (one of these, before launching — or use Settings in-app)\n"
 printf "  ${B}export GROQ_API_KEY=gsk_...${R}            ${GREY}# Groq        (recommended — fast + free tier)${R}\n"
 printf "  ${B}export SILICONFLOW_API_KEY=sk-...${R}       ${GREY}# SiliconFlow${R}\n"
 printf "  ${B}export GOOGLE_API_KEY=AIza...${R}           ${GREY}# Google AI Studio${R}\n"
-printf "  ${B}export NOVITA_API_KEY=sk_...${R}            ${GREY}# Novita${R}\n"
+printf "  ${B}export NOVITA_API_KEY=sk_...${R}            ${GREY}# Novita AI${R}\n"
 printf "  ${GREY}(add to ~/.bashrc / ~/.zshrc to persist, or set it inside TheDawg's Settings panel)${R}\n"
 
 # ---- done ----
