@@ -52,7 +52,7 @@ import urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --------------------------------------------------------------------------
@@ -337,7 +337,10 @@ the right number of arguments, and no widget update happens off the main thread.
 METHOD (the build dialogue):
 1. CLARIFY BEFORE BUILDING. If meaningful details are unresolved, do not dump code — surface the
    decisions. (TheDawg may run a structured intake for you; honour every answer precisely,
-   including the chosen toolkit.) Once the shape is clear, build.
+   including the chosen toolkit.) When you do ask, prefer concrete either/or choices the user can
+   pick from (e.g. "table or live log?", "save to file or copy to clipboard?") over broad open
+   questions — TheDawg turns your questions into tappable options, so choice-shaped questions are
+   answered with a click. Once the shape is clear, build.
 2. TESTING VERSION BY DEFAULT: ONE complete, runnable, single-file GUI script. Lean but correct —
    real widgets, real behaviour, full input validation, threaded work, graceful errors — but no
    packaging ceremony yet.
@@ -382,6 +385,33 @@ Rules:
 - 2 to 4 options per question. Options must be concrete and mutually distinct. Set "multi": true
   only when picking several genuinely makes sense.
 - Prefer options the user can just tap. Keep them short."""
+
+# Turns the model's OWN clarifying questions (asked mid-build, when it returned no
+# code) into the same tappable multiple-choice block used for the opening intake — so
+# EVERY time TheDawg asks you something, you can tap an answer instead of typing it.
+FOLLOWUP_PROMPT = """You convert a build assistant's questions into tappable multiple-choice options.
+You are given the assistant's latest message to the user (the assistant builds GUI Python tools for
+Linux). If that message asks the user anything — a clarifying question, a choice between approaches,
+a yes/no, which option they prefer — turn EACH such question into a clickable question with concrete
+options the user can just tap.
+
+Return ONLY a JSON object, no prose, no markdown fences:
+{"questions": [
+   {"q": "<the question, short>", "options": ["<concrete answer>", "..."], "multi": false},
+   ...
+ ]}
+
+Rules:
+- If the assistant is NOT actually asking the user to decide anything (it is only explaining,
+  confirming, or reporting what it just did), return {"questions": []}. Never invent questions.
+- One entry per real question the assistant asked; keep the user's wording and intent.
+- 2 to 4 options each, concrete and mutually distinct, short enough to sit on a button. Offer the
+  obvious real answers (include a sensible default; for a yes/no include both). Add an option like
+  "no preference" / "you decide" when that is a reasonable answer.
+- Set "multi": true ONLY when choosing several genuinely makes sense (e.g. "which of these
+  features?"). Otherwise false.
+- Max 6 questions. The user can always type a free-form reply instead, so do NOT pad — structure
+  only what the assistant actually asked."""
 
 # Used by the GitHub-ready flow to assemble repo files from the user's answers.
 GITHUB_PROMPT = """You are preparing a polished GitHub release of a LINUX Python GUI tool (targets
@@ -1750,6 +1780,10 @@ def chat_with_autotest(messages, provider_id=None):
         code = extract_code(res.get("reply", ""))
         if not code:
             res["autotest"] = {"ran": False, "rounds": rounds}
+            # No code means the model spoke or asked rather than built. If it asked the
+            # user something, structure those questions into tappable options so the user
+            # can answer with a click — the opening-intake experience, on every turn.
+            res["followup"] = structure_followup(res.get("reply", ""), convo, provider_id)
             return res
         # lint-and-fix loop: silently apply Ruff's SAFE mechanical fixes so trivial
         # cleanup (a stray unused var, a redundant f-string prefix) never costs a fix
@@ -1858,6 +1892,38 @@ def make_intake(request, provider_id=None):
         if q.get("q") and len(opts) >= 2:
             qs.append({"q": str(q["q"]), "options": opts, "multi": bool(q.get("multi"))})
     return {"intake": {"summary": parsed.get("summary", ""), "questions": qs}}
+
+def structure_followup(reply, convo, provider_id=None):
+    """When the model's reply contained NO code, it usually means it asked the user
+    something rather than building. Turn those questions into the same tappable
+    options the opening intake uses, so the user can answer with a click every time —
+    not just on the first message. Returns {"questions": [...]} (possibly empty).
+    Cheap-gated: if the reply has no '?' it can't be asking, so we skip the model
+    call entirely and return no questions."""
+    text = (reply or "").strip()
+    if not text or "?" not in text:
+        return {"questions": []}
+    # a little context keeps the generated options concrete: the user's most recent ask
+    last_user = ""
+    for m in reversed(convo or []):
+        if m.get("role") == "user":
+            last_user = (m.get("content") or "")[:600]
+            break
+    user_blob = (f"For context, the user's last message was:\n{last_user}\n\n" if last_user else "")
+    res = call_model([
+        {"role": "system", "content": FOLLOWUP_PROMPT},
+        {"role": "user", "content":
+            user_blob + "The assistant's message to turn into options:\n" + text[:2500]},
+    ], provider_id)
+    if res.get("error"):
+        return {"questions": []}   # never block the build on the optional helper failing
+    parsed = _parse_json_reply(res.get("reply", "")) or {}
+    qs = []
+    for q in parsed.get("questions", [])[:6]:
+        opts = [str(o) for o in q.get("options", [])][:4]
+        if q.get("q") and len(opts) >= 2:
+            qs.append({"q": str(q["q"]), "options": opts, "multi": bool(q.get("multi"))})
+    return {"questions": qs}
 
 def make_github(code, details, provider_id=None):
     """Generate README/.gitignore/requirements from the final code + repo details."""

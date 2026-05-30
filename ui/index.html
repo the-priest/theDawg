@@ -647,7 +647,7 @@ let state = {
   messages: [], code: null, name: "tool", version: "testing",
   busy: false, pendingRelease: false, intakeDone: false, intakeAnswers: {},
   prevCode: null, sessionId: null, attachments: [], lastError: null,
-  ghUser: "", ghHolder: "", _panelTab: "sessions", _intakeQs: null,
+  ghUser: "", ghHolder: "", _panelTab: "sessions", _intakeQs: null, _followupEl: null,
 };
 let providers = [];
 
@@ -821,6 +821,7 @@ async function send(forced){
   const typed=forced || input.value.trim();
   const hasAttach=state.attachments.length>0;
   if((!typed && !hasAttach) || state.busy) return;
+  dismissFollowup();   // a typed reply supersedes any open tappable follow-up
   if(!forced){ input.value=""; input.style.height="auto"; }
 
   let display=typed || "(see attached files)";
@@ -858,41 +859,105 @@ async function runIntake(request){
   if(res.error || !res.intake || !res.intake.questions || !res.intake.questions.length){ state.intakeDone=true; return false; }
   renderIntake(res.intake); return true;
 }
-function renderIntake(intake){
-  state.intakeDone=true; state.intakeAnswers={};
+/* Generic tappable multiple-choice block — powers BOTH the opening intake AND the
+   follow-up questions the model asks mid-build. Keeps answers in a closure so several
+   blocks can coexist without clashing. cfg:
+     {questions, summary, note, submitLabel, skipLabel, requireAll, showWho,
+      onSubmit(spec, answers), onSkip()}                                            */
+function renderQuestions(cfg){
   const t=$("#thread");
   const m=document.createElement("div"); m.className="msg smith intake";
-  let html=`<div class="who">dawg</div><div class="bubble">`;
-  if(intake.summary) html+=`<div class="intake-sum">${escapeHtml(intake.summary)}</div>`;
-  html+=`<div class="intake-note">A few quick choices so I build exactly what you want:</div>`;
-  intake.questions.forEach((q,qi)=>{
+  const answers={};
+  let html="";
+  if(cfg.showWho!==false) html+=`<div class="who">dawg</div>`;
+  html+=`<div class="bubble">`;
+  if(cfg.summary) html+=`<div class="intake-sum">${escapeHtml(cfg.summary)}</div>`;
+  if(cfg.note)    html+=`<div class="intake-note">${escapeHtml(cfg.note)}</div>`;
+  cfg.questions.forEach((q,qi)=>{
     html+=`<div class="iq" data-qi="${qi}"><div class="iq-q">${escapeHtml(q.q)}</div><div class="iq-opts">`;
     q.options.forEach((o,oi)=>{ html+=`<button class="iq-opt" data-qi="${qi}" data-oi="${oi}" data-multi="${q.multi}">${escapeHtml(o)}</button>`; });
     html+=`</div></div>`;
   });
-  html+=`<div class="intake-actions"><button class="btn ghost" id="intakeSkip">skip — just build it</button><button class="btn primary" id="intakeBuild" disabled>build it ▸</button></div></div>`;
+  html+=`<div class="intake-actions">`
+      + `<button class="btn ghost q-skip">${escapeHtml(cfg.skipLabel||"skip")}</button>`
+      + `<button class="btn primary q-submit" disabled>${escapeHtml(cfg.submitLabel||"send ▸")}</button>`
+      + `</div></div>`;
   m.innerHTML=html; t.appendChild(m); t.scrollTop=t.scrollHeight;
-  state._intakeQs=intake.questions;
+
+  const submitBtn=m.querySelector(".q-submit");
+  const skipBtn=m.querySelector(".q-skip");
+  const answeredCount=()=>cfg.questions.filter((q,i)=>m.querySelectorAll(`.iq-opt[data-qi="${i}"].on`).length>0).length;
+  const refreshSubmit=()=>{
+    const n=answeredCount();
+    submitBtn.disabled = cfg.requireAll ? (n<cfg.questions.length) : (n===0);
+  };
   m.querySelectorAll(".iq-opt").forEach(btn=>{
     btn.onclick=()=>{
       const qi=+btn.dataset.qi, multi=btn.dataset.multi==="true";
       const group=m.querySelectorAll(`.iq-opt[data-qi="${qi}"]`);
       if(multi){ btn.classList.toggle("on"); } else { group.forEach(b=>b.classList.remove("on")); btn.classList.add("on"); }
-      const picked=[...group].filter(b=>b.classList.contains("on")).map(b=>state._intakeQs[qi].options[+b.dataset.oi]);
-      state.intakeAnswers[state._intakeQs[qi].q]=picked;
-      const allAnswered=state._intakeQs.every((q,i)=>m.querySelectorAll(`.iq-opt[data-qi="${i}"].on`).length>0);
-      $("#intakeBuild").disabled=!allAnswered;
+      const picked=[...group].filter(b=>b.classList.contains("on")).map(b=>cfg.questions[qi].options[+b.dataset.oi]);
+      answers[cfg.questions[qi].q]=picked;
+      refreshSubmit();
     };
   });
-  $("#intakeSkip").onclick=()=>{ m.querySelector(".intake-actions").remove(); converse(); };
-  $("#intakeBuild").onclick=()=>{
-    const spec=Object.entries(state.intakeAnswers).map(([q,a])=>`- ${q} ${a.join(", ")}`).join("\n");
+  const closeRow=()=>{ const r=m.querySelector(".intake-actions"); if(r) r.remove(); };
+  skipBtn.onclick=()=>{ m.querySelectorAll(".iq-opt").forEach(b=>b.disabled=true); closeRow(); if(cfg.onSkip) cfg.onSkip(); };
+  submitBtn.onclick=()=>{
+    const spec=Object.entries(answers).filter(([q,a])=>a&&a.length)
+      .map(([q,a])=>`- ${q} ${a.join(", ")}`).join("\n");
     m.querySelectorAll(".iq-opt").forEach(b=>b.disabled=true);
-    m.querySelector(".intake-actions").remove();
-    state.messages.push({role:"user", content:"Build precisely to these choices:\n"+spec});
-    addMsg("you", "Selections:\n"+spec);
-    converse();
+    closeRow();
+    if(cfg.onSubmit) cfg.onSubmit(spec, answers);
   };
+  return m;
+}
+
+function renderIntake(intake){
+  state.intakeDone=true;
+  renderQuestions({
+    questions:intake.questions, summary:intake.summary,
+    note:"A few quick choices so I build exactly what you want:",
+    submitLabel:"build it ▸", skipLabel:"skip — just build it",
+    requireAll:true, showWho:true,
+    onSkip:()=>converse(),
+    onSubmit:(spec)=>{
+      state.messages.push({role:"user", content:"Build precisely to these choices:\n"+spec});
+      addMsg("you", "Selections:\n"+spec);
+      converse();
+    },
+  });
+}
+
+/* Follow-up questions: the model asked something mid-build (no code returned). Show
+   the same tappable options under its message. Answering is optional — the user can
+   still type a free-form reply, which supersedes these chips. */
+function renderFollowup(fu){
+  if(!fu || !fu.questions || !fu.questions.length) return;
+  const el=renderQuestions({
+    questions:fu.questions, summary:"",
+    note:"Tap to answer — or just type your reply below.",
+    submitLabel:"send answers ▸", skipLabel:"answer in chat",
+    requireAll:false, showWho:false,
+    onSkip:()=>{ state._followupEl=null; },
+    onSubmit:(spec)=>{
+      state._followupEl=null;
+      if(!spec) return;
+      state.messages.push({role:"user", content:"My answers:\n"+spec});
+      addMsg("you", spec);
+      converse();
+    },
+  });
+  state._followupEl=el;
+}
+
+/* If a follow-up block is still open and the user does something else (types a reply,
+   starts a new turn), retire its buttons so stale chips can't be clicked. */
+function dismissFollowup(){
+  const el=state._followupEl; if(!el) return;
+  el.querySelectorAll(".iq-opt").forEach(b=>b.disabled=true);
+  const r=el.querySelector(".intake-actions"); if(r) r.remove();
+  state._followupEl=null;
 }
 
 async function converse(){
@@ -926,6 +991,10 @@ async function converse(){
   }
   addMsg("smith", prose || (code?"Here's the build — try it in the test panel.":res.reply), flag);
   state.messages.push({role:"assistant", content:res.reply});
+  // If the model asked a question instead of building, offer tappable answers for it.
+  if(!code && res.followup && res.followup.questions && res.followup.questions.length){
+    renderFollowup(res.followup);
+  }
 }
 
 function splitReply(reply){
