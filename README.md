@@ -1,6 +1,10 @@
-# TheDawg 🐶
+<p align="center">
+  <img src="assets/icon.png" alt="TheDawg" width="128" height="128">
+</p>
 
-**An AI Python GUI toolsmith for Linux & macOS.**
+<h1 align="center">TheDawg</h1>
+
+<p align="center"><b>An AI Python GUI toolsmith for Linux &amp; macOS.</b></p>
 
 Describe a tool in plain English. TheDawg agrees on the spec with you, forges a real
 GUI application, lets you launch and test it on the spot, fixes its own bugs from the

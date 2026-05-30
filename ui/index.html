@@ -85,7 +85,8 @@
   .badge.testing{background:rgba(232,163,61,.14);color:var(--amber);border:1px solid rgba(232,163,61,.3)}
   .badge.release{background:rgba(159,224,74,.14);color:var(--lime);border:1px solid rgba(159,224,74,.3)}
   .spacer{flex:1}
-  .model-pill{font-family:var(--mono);font-size:11px;color:var(--dim);display:flex;align-items:center;gap:7px}
+  .model-pill{font-family:var(--mono);font-size:11px;color:var(--dim);display:flex;align-items:center;gap:7px;min-width:0}
+  .model-pill #modelName{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .model-pill .dot{width:7px;height:7px;border-radius:50%;background:var(--faint)}
   .model-pill .dot.on{background:var(--lime);box-shadow:0 0 7px var(--lime)}
   .provider-pick{background:var(--panel);border:1px solid var(--line);border-radius:8px;color:var(--ink);
@@ -97,6 +98,10 @@
 
   /* main split — desktop two columns */
   .main{display:grid;grid-template-columns:480px 1fr;min-height:0}
+  /* min-width:0 lets the 1fr column respect the viewport — without it, wide code
+     lines or the button row force the column past the screen edge and the right-hand
+     buttons (save / build) get pushed off-screen. */
+  .main>*{min-width:0;min-height:0}
 
   /* dialogue column */
   .dialogue{display:flex;flex-direction:column;min-height:0;
@@ -169,10 +174,11 @@
   .chip .rm:hover{color:var(--red)}
 
   /* workspace column */
-  .work{display:grid;grid-template-rows:1.6fr 1fr;min-height:0;position:relative}
-  .codewrap,.testwrap{display:flex;flex-direction:column;min-height:0}
+  .work{display:grid;grid-template-rows:1.6fr 1fr;min-height:0;min-width:0;position:relative}
+  .work>*{min-width:0}
+  .codewrap,.testwrap{display:flex;flex-direction:column;min-height:0;min-width:0}
   .codewrap{border-bottom:1px solid var(--line)}
-  .wh{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line2);background:var(--bg2)}
+  .wh{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line2);background:var(--bg2);flex-wrap:wrap;min-width:0}
   .wh .label{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--faint);text-transform:uppercase}
   .wh .fname{font-family:var(--mono);font-size:12px;color:var(--steel)}
   .wh .acts{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
@@ -199,7 +205,7 @@
   .btn.polish.running{background:linear-gradient(180deg,#e0594a,#b53d30);border-color:#b53d30;color:#fff}
   .polish-status{font-family:var(--mono);font-size:11px;color:var(--mag)}
 
-  .codebody{flex:1;overflow:auto;min-height:0;position:relative}
+  .codebody{flex:1;overflow:auto;min-height:0;min-width:0;position:relative}
   pre.code{margin:0;padding:14px 16px 18px;font-family:var(--mono);font-size:12.5px;line-height:1.62;
     counter-reset:ln;tab-size:4}
   pre.code .line{display:block;white-space:pre;padding-left:46px;position:relative;min-height:1.62em}
