@@ -37,14 +37,19 @@
 
   .app{display:grid;grid-template-rows:34px 54px 1fr;height:100vh;position:relative;z-index:1}
 
-  /* animated forge background */
+  /* South Park-style snowy mountain-town background (faded so the UI stays readable) */
   .bg-fx{position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none}
-  .bg-dragon{position:absolute;top:50%;left:50%;width:min(120vh,120vw);height:min(120vh,120vw);
-    transform:translate(-50%,-50%);opacity:.10;animation:breathe 14s ease-in-out infinite}
-  @keyframes breathe{0%,100%{opacity:.07;transform:translate(-50%,-50%) scale(1)}
-    50%{opacity:.13;transform:translate(-50%,-50%) scale(1.03)}}
+  .bg-town{position:absolute;inset:0;width:100%;height:100%;
+    opacity:.16;animation:townbreathe 18s ease-in-out infinite}
+  @keyframes townbreathe{0%,100%{opacity:.13}50%{opacity:.19}}
+  /* gently drifting snow — three parallax layers, seamless vertical loop */
+  .snow{animation:snowfall linear infinite}
+  .snow-a{animation-duration:27s}
+  .snow-b{animation-duration:19s}
+  .snow-c{animation-duration:13s}
+  @keyframes snowfall{from{transform:translateY(0)}to{transform:translateY(800px)}}
   .bg-scan{position:absolute;inset:0;background:repeating-linear-gradient(
-    0deg,transparent 0 3px,rgba(0,0,0,.18) 3px 4px);mix-blend-mode:multiply;opacity:.5}
+    0deg,transparent 0 3px,rgba(0,0,0,.18) 3px 4px);mix-blend-mode:multiply;opacity:.42}
 
   /* titlebar */
   .titlebar{display:flex;align-items:center;gap:12px;padding:0 12px;
@@ -354,27 +359,188 @@
 </head>
 <body>
 <div class="bg-fx" aria-hidden="true">
-  <svg class="bg-dragon" viewBox="0 0 600 600" preserveAspectRatio="xMidYMid slice">
+  <svg class="bg-town" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMax slice"
+       xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
     <defs>
-      <radialGradient id="bgglow" cx="50%" cy="48%" r="55%">
-        <stop offset="0%" stop-color="#1a1207" stop-opacity="0.9"/>
-        <stop offset="100%" stop-color="#0a0c0d" stop-opacity="0"/>
-      </radialGradient>
+      <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#142339"/>
+        <stop offset="55%" stop-color="#243a57"/>
+        <stop offset="100%" stop-color="#3a5270"/>
+      </linearGradient>
+      <!-- a single construction-paper pine, reused at different sizes -->
+      <g id="pine">
+        <rect x="-5" y="-20" width="10" height="22" fill="#3a2a1c"/>
+        <polygon points="0,-96 -50,-22 50,-22" fill="#2f4a37"/>
+        <polygon points="0,-128 -41,-58 41,-58" fill="#356b46"/>
+        <polygon points="0,-158 -31,-98 31,-98" fill="#2f5a3d"/>
+        <polygon points="0,-158 -10,-140 10,-140" fill="#e3ebf3" stroke="none"/>
+        <polygon points="0,-128 -13,-108 13,-108" fill="#e3ebf3" stroke="none"/>
+        <polygon points="0,-96 -16,-72 16,-72" fill="#e3ebf3" stroke="none"/>
+      </g>
+      <!-- snowflake fields (stacked + duplicated for a seamless vertical loop) -->
+      <g id="flkA" fill="#f2f6fb" stroke="none">
+        <circle cx="50" cy="40" r="1.6"/><circle cx="170" cy="140" r="1.6"/><circle cx="300" cy="70" r="1.6"/>
+        <circle cx="430" cy="180" r="1.6"/><circle cx="560" cy="50" r="1.6"/><circle cx="690" cy="150" r="1.6"/>
+        <circle cx="820" cy="90" r="1.6"/><circle cx="950" cy="170" r="1.6"/><circle cx="1080" cy="60" r="1.6"/>
+        <circle cx="120" cy="300" r="1.6"/><circle cx="360" cy="380" r="1.6"/><circle cx="600" cy="320" r="1.6"/>
+        <circle cx="840" cy="360" r="1.6"/><circle cx="1090" cy="310" r="1.6"/>
+      </g>
+      <g id="flkB" fill="#f2f6fb" stroke="none">
+        <circle cx="90" cy="90" r="2.4"/><circle cx="240" cy="30" r="2.4"/><circle cx="390" cy="130" r="2.4"/>
+        <circle cx="540" cy="200" r="2.4"/><circle cx="660" cy="80" r="2.4"/><circle cx="800" cy="170" r="2.4"/>
+        <circle cx="930" cy="40" r="2.4"/><circle cx="1050" cy="130" r="2.4"/><circle cx="1160" cy="200" r="2.4"/>
+        <circle cx="180" cy="260" r="2.4"/><circle cx="430" cy="340" r="2.4"/><circle cx="710" cy="260" r="2.4"/>
+        <circle cx="900" cy="340" r="2.4"/><circle cx="1140" cy="270" r="2.4"/>
+      </g>
+      <g id="flkC" fill="#f2f6fb" stroke="none">
+        <circle cx="60" cy="180" r="3.2"/><circle cx="260" cy="230" r="3.2"/><circle cx="470" cy="90" r="3.2"/>
+        <circle cx="640" cy="210" r="3.2"/><circle cx="880" cy="120" r="3.2"/><circle cx="1020" cy="220" r="3.2"/>
+        <circle cx="1150" cy="90" r="3.2"/><circle cx="150" cy="420" r="3.2"/><circle cx="520" cy="440" r="3.2"/>
+        <circle cx="960" cy="440" r="3.2"/>
+      </g>
     </defs>
-    <rect width="600" height="600" fill="url(#bgglow)"/>
-    <g fill="none" stroke="#e8a33d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.55">
-      <path d="M210 250 L290 215 L355 230 L395 205 L380 245 L405 255 L368 272 L300 300 Z"/>
-      <path d="M300 300 L360 300 L392 282"/>
-      <path d="M290 215 Q250 175 200 180 M300 222 Q270 195 235 200"/>
-      <circle cx="330" cy="248" r="5.5" fill="#e8a33d" stroke="none"/>
-      <path d="M210 250 L175 268 M232 268 L205 295 M255 285 L235 320"/>
-      <path d="M405 255 q34 -4 50 -28 q18 -22 6 -44" stroke="#e07a3a" opacity="0.8"/>
+
+    <!-- sky + moon + stars -->
+    <rect width="1200" height="800" fill="url(#sky)"/>
+    <circle cx="1015" cy="125" r="70" fill="#aebfd6" opacity=".18"/>
+    <circle cx="1015" cy="125" r="44" fill="#f2ecd8"/>
+    <g fill="#cdd8ea" stroke="none">
+      <circle cx="120" cy="90" r="1.3"/><circle cx="300" cy="60" r="1.3"/><circle cx="520" cy="110" r="1.3"/>
+      <circle cx="720" cy="80" r="1.3"/><circle cx="180" cy="180" r="1.3"/><circle cx="420" cy="150" r="1.3"/>
+      <circle cx="900" cy="200" r="1.3"/><circle cx="640" cy="170" r="1.3"/>
     </g>
-    <g stroke="#46c7d4" stroke-width="1" opacity="0.16">
-      <path d="M60 60 h120 v40 M540 540 h-120 v-40 M60 540 v-100 h60 M540 60 v100 h-60"/>
-      <circle cx="180" cy="100" r="3" fill="#46c7d4" stroke="none"/>
-      <circle cx="420" cy="500" r="3" fill="#46c7d4" stroke="none"/>
+
+    <!-- mountain ranges -->
+    <polygon points="0,560 130,360 250,470 400,300 540,470 700,330 880,470 1050,360 1200,470 1200,800 0,800" fill="#34465f"/>
+    <polygon points="0,610 160,430 300,540 470,360 620,540 780,440 940,560 1100,450 1200,540 1200,800 0,800" fill="#293a52"/>
+    <g fill="#cdd9e8" stroke="none">
+      <polygon points="160,430 134,468 186,468"/>
+      <polygon points="470,360 440,406 500,406"/>
+      <polygon points="780,440 754,478 806,478"/>
+      <polygon points="1100,450 1074,486 1126,486"/>
     </g>
+
+    <!-- snow ground -->
+    <path d="M0,604 C150,566 300,612 450,584 S760,560 900,592 S1150,576 1200,596 L1200,800 L0,800 Z"
+          fill="#e3ebf3" stroke="#c4d2e2" stroke-width="1.6"/>
+    <ellipse cx="300" cy="690" rx="220" ry="46" fill="#eef4fa" opacity=".7" stroke="none"/>
+    <ellipse cx="980" cy="712" rx="260" ry="50" fill="#eef4fa" opacity=".6" stroke="none"/>
+
+    <!-- foreground cut-outs share a dark paper outline -->
+    <g stroke="#101a26" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round">
+
+      <!-- distant pines -->
+      <use href="#pine" xlink:href="#pine" transform="translate(700,572) scale(.6)"/>
+      <use href="#pine" xlink:href="#pine" transform="translate(770,580) scale(.5)"/>
+
+      <!-- cabin A (warm-lit windows tie into the amber accent) -->
+      <rect x="762" y="474" width="132" height="92" fill="#46342a"/>
+      <polygon points="748,478 908,478 828,418" fill="#5a4232"/>
+      <polygon points="756,474 900,474 828,427" fill="#e3ebf3" stroke="none"/>
+      <rect x="868" y="430" width="16" height="30" fill="#3c2c22"/>
+      <rect x="866" y="426" width="20" height="8" fill="#e3ebf3" stroke="none"/>
+      <rect x="778" y="496" width="36" height="40" fill="#e8a33d" opacity=".22" stroke="none"/>
+      <rect x="842" y="496" width="36" height="40" fill="#e8a33d" opacity=".22" stroke="none"/>
+      <rect x="782" y="500" width="28" height="32" rx="2" fill="#e8a33d"/>
+      <rect x="846" y="500" width="28" height="32" rx="2" fill="#e8a33d"/>
+      <path d="M796,500 v32 M782,516 h28 M860,500 v32 M846,516 h28" stroke="#3c2c22" stroke-width="1.6"/>
+      <rect x="816" y="520" width="26" height="46" fill="#33251c"/>
+      <circle cx="836" cy="544" r="2.4" fill="#e8a33d" stroke="none"/>
+      <g stroke="none" fill="#aeb8c4" opacity=".5">
+        <circle cx="876" cy="412" r="7"/><circle cx="884" cy="398" r="9"/><circle cx="874" cy="382" r="11"/>
+      </g>
+
+      <!-- cabin B -->
+      <rect x="980" y="498" width="92" height="68" fill="#3f2e24"/>
+      <polygon points="968,500 1084,500 1026,452" fill="#523a2c"/>
+      <polygon points="975,498 1077,498 1026,460" fill="#e3ebf3" stroke="none"/>
+      <rect x="998" y="516" width="22" height="26" rx="2" fill="#e8a33d"/>
+      <rect x="1034" y="516" width="22" height="26" rx="2" fill="#e8a33d"/>
+      <path d="M1009,516 v26 M998,529 h22 M1045,516 v26 M1034,529 h22" stroke="#3c2c22" stroke-width="1.4"/>
+
+      <!-- a little bus rolling up to the stop -->
+      <rect x="1054" y="600" width="116" height="44" rx="10" fill="#e7b53a"/>
+      <rect x="1054" y="600" width="18" height="44" fill="#d99a2f"/>
+      <rect x="1066" y="609" width="94" height="16" rx="3" fill="#bcd2dd"/>
+      <path d="M1088,609 v16 M1110,609 v16 M1132,609 v16" stroke="#7d6a36" stroke-width="1.6"/>
+      <circle cx="1060" cy="616" r="3" fill="#f6e6a6" stroke="none"/>
+      <circle cx="1080" cy="646" r="10" fill="#23201a"/><circle cx="1080" cy="646" r="4.2" fill="#6a6258" stroke="none"/>
+      <circle cx="1140" cy="646" r="10" fill="#23201a"/><circle cx="1140" cy="646" r="4.2" fill="#6a6258" stroke="none"/>
+
+      <!-- near pines -->
+      <use href="#pine" xlink:href="#pine" transform="translate(70,648) scale(.95)"/>
+      <use href="#pine" xlink:href="#pine" transform="translate(662,648) scale(.8)"/>
+
+      <!-- bus-stop sign -->
+      <rect x="88" y="470" width="9" height="178" rx="3" fill="#6a5a48"/>
+      <rect x="56" y="452" width="64" height="34" rx="5" fill="#d94f3f"/>
+      <polygon points="56,452 120,452 120,458 56,458" fill="#eef4fa" stroke="none"/>
+      <text x="88" y="476" text-anchor="middle" font-family="Sora, sans-serif" font-size="17" font-weight="700" fill="#fff" stroke="none">BUS</text>
+
+      <!-- snow mounds the kids stand in -->
+      <g stroke="none" fill="#eef4fa">
+        <ellipse cx="185" cy="650" rx="40" ry="10"/><ellipse cx="322" cy="654" rx="38" ry="10"/>
+        <ellipse cx="452" cy="649" rx="42" ry="11"/><ellipse cx="588" cy="652" rx="38" ry="10"/>
+      </g>
+
+      <!-- four bundled-up kids (original cut-outs, South Park style) -->
+      <!-- kid 1 : amber coat, brown beanie -->
+      <g transform="translate(185,650) scale(1.12)">
+        <rect x="-17" y="-18" width="13" height="18" rx="5" fill="#2a2118"/><rect x="4" y="-18" width="13" height="18" rx="5" fill="#2a2118"/>
+        <path d="M0,-86 C-26,-86 -34,-64 -34,-40 C-34,-18 -25,-12 0,-12 C25,-12 34,-18 34,-40 C34,-64 26,-86 0,-86 Z" fill="#d99a33"/>
+        <ellipse cx="-33" cy="-32" rx="9" ry="11" fill="#bd8228"/><ellipse cx="33" cy="-32" rx="9" ry="11" fill="#bd8228"/>
+        <circle cx="0" cy="-106" r="24" fill="#e9c8a4"/>
+        <path d="M-25,-118 a25,24 0 0 1 50,0 Z" fill="#46342a"/>
+        <rect x="-27" y="-120" width="54" height="9" rx="4" fill="#5a4230"/>
+        <ellipse cx="-6.5" cy="-108" rx="5.5" ry="8" fill="#fff"/><ellipse cx="6.5" cy="-108" rx="5.5" ry="8" fill="#fff"/>
+        <circle cx="-6" cy="-107" r="2.7" fill="#15110d" stroke="none"/><circle cx="7" cy="-107" r="2.7" fill="#15110d" stroke="none"/>
+        <path d="M-5,-93 q5,4 10,0" fill="none" stroke="#3a2a20" stroke-width="1.6"/>
+      </g>
+      <!-- kid 2 : teal hooded parka -->
+      <g transform="translate(322,654) scale(1.04)">
+        <rect x="-17" y="-18" width="13" height="18" rx="5" fill="#2a2118"/><rect x="4" y="-18" width="13" height="18" rx="5" fill="#2a2118"/>
+        <path d="M0,-86 C-26,-86 -34,-64 -34,-40 C-34,-18 -25,-12 0,-12 C25,-12 34,-18 34,-40 C34,-64 26,-86 0,-86 Z" fill="#3fa9b8"/>
+        <ellipse cx="-33" cy="-32" rx="9" ry="11" fill="#2f8a98"/><ellipse cx="33" cy="-32" rx="9" ry="11" fill="#2f8a98"/>
+        <ellipse cx="0" cy="-110" rx="33" ry="35" fill="#3fa9b8"/>
+        <circle cx="0" cy="-106" r="24" fill="#e9c8a4"/>
+        <ellipse cx="0" cy="-104" rx="27" ry="29" fill="none" stroke="#eef4fa" stroke-width="6"/>
+        <ellipse cx="-6.5" cy="-108" rx="5.5" ry="8" fill="#fff"/><ellipse cx="6.5" cy="-108" rx="5.5" ry="8" fill="#fff"/>
+        <circle cx="-6" cy="-107" r="2.7" fill="#15110d" stroke="none"/><circle cx="7" cy="-107" r="2.7" fill="#15110d" stroke="none"/>
+        <path d="M-5,-93 q5,4 10,0" fill="none" stroke="#3a2a20" stroke-width="1.6"/>
+      </g>
+      <!-- kid 3 : green coat, tan ushanka -->
+      <g transform="translate(452,649) scale(1.16)">
+        <rect x="-17" y="-18" width="13" height="18" rx="5" fill="#2a2118"/><rect x="4" y="-18" width="13" height="18" rx="5" fill="#2a2118"/>
+        <path d="M0,-86 C-26,-86 -34,-64 -34,-40 C-34,-18 -25,-12 0,-12 C25,-12 34,-18 34,-40 C34,-64 26,-86 0,-86 Z" fill="#6fae3a"/>
+        <ellipse cx="-33" cy="-32" rx="9" ry="11" fill="#5a922e"/><ellipse cx="33" cy="-32" rx="9" ry="11" fill="#5a922e"/>
+        <circle cx="0" cy="-106" r="24" fill="#c79a6e"/>
+        <path d="M-26,-116 a26,23 0 0 1 52,0 Z" fill="#7a5a3a"/>
+        <rect x="-27" y="-120" width="54" height="11" rx="5" fill="#cdbfae"/>
+        <rect x="-31" y="-114" width="12" height="34" rx="6" fill="#7a5a3a"/><rect x="19" y="-114" width="12" height="34" rx="6" fill="#7a5a3a"/>
+        <circle cx="-25" cy="-80" r="6" fill="#cdbfae" stroke="none"/><circle cx="25" cy="-80" r="6" fill="#cdbfae" stroke="none"/>
+        <ellipse cx="-6.5" cy="-108" rx="5.5" ry="8" fill="#fff"/><ellipse cx="6.5" cy="-108" rx="5.5" ry="8" fill="#fff"/>
+        <circle cx="-6" cy="-107" r="2.7" fill="#15110d" stroke="none"/><circle cx="7" cy="-107" r="2.7" fill="#15110d" stroke="none"/>
+        <path d="M-5,-93 q5,4 10,0" fill="none" stroke="#3a2a20" stroke-width="1.6"/>
+      </g>
+      <!-- kid 4 : lilac coat, maroon pom beanie -->
+      <g transform="translate(588,652) scale(1.06)">
+        <rect x="-17" y="-18" width="13" height="18" rx="5" fill="#2a2118"/><rect x="4" y="-18" width="13" height="18" rx="5" fill="#2a2118"/>
+        <path d="M0,-86 C-26,-86 -34,-64 -34,-40 C-34,-18 -25,-12 0,-12 C25,-12 34,-18 34,-40 C34,-64 26,-86 0,-86 Z" fill="#b489d6"/>
+        <ellipse cx="-33" cy="-32" rx="9" ry="11" fill="#9a6fc0"/><ellipse cx="33" cy="-32" rx="9" ry="11" fill="#9a6fc0"/>
+        <circle cx="0" cy="-106" r="24" fill="#e9c8a4"/>
+        <path d="M-25,-118 a25,24 0 0 1 50,0 Z" fill="#7a2f3a"/>
+        <rect x="-27" y="-119" width="54" height="9" rx="4" fill="#8e3a47"/>
+        <circle cx="0" cy="-141" r="8" fill="#eef4fa"/>
+        <ellipse cx="-6.5" cy="-108" rx="5.5" ry="8" fill="#fff"/><ellipse cx="6.5" cy="-108" rx="5.5" ry="8" fill="#fff"/>
+        <circle cx="-6" cy="-107" r="2.7" fill="#15110d" stroke="none"/><circle cx="7" cy="-107" r="2.7" fill="#15110d" stroke="none"/>
+        <path d="M-5,-93 q5,4 10,0" fill="none" stroke="#3a2a20" stroke-width="1.6"/>
+      </g>
+    </g>
+
+    <!-- drifting snow, three parallax layers (CSS-animated) -->
+    <g class="snow snow-a" opacity=".5"><use href="#flkA" xlink:href="#flkA"/><use href="#flkA" xlink:href="#flkA" y="-800"/></g>
+    <g class="snow snow-b" opacity=".7"><use href="#flkB" xlink:href="#flkB" x="34"/><use href="#flkB" xlink:href="#flkB" x="34" y="-800"/></g>
+    <g class="snow snow-c" opacity=".9"><use href="#flkC" xlink:href="#flkC" x="-26"/><use href="#flkC" xlink:href="#flkC" x="-26" y="-800"/></g>
   </svg>
   <div class="bg-scan"></div>
 </div>
