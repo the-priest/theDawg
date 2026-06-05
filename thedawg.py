@@ -3,19 +3,19 @@
 TheDawg  -  AI-assisted Linux Python toolsmith
 ==============================================
 A local workspace for building real, graphical Python tools by talking to a model —
-GUI tools for Linux, tuned for Kali on Phosh (mobile GNOME, Wayland, OnePlus 6) and
-KDE Plasma (X11, desktop). You agree on the tool in a build dialogue, TheDawg writes a
-TESTING version you launch right here on YOUR box, you iterate on real behaviour, and
-only when you ask does it package a RELEASE version. Then with one button it can also
-pack the tool into a single-file Linux binary via PyInstaller.
+native GUI tools for the Linux desktop, tuned for KDE Plasma on X11 and at home on any
+desktop (GNOME, XFCE, Cinnamon, …) under either Wayland or X11. You agree on the tool in
+a build dialogue, TheDawg writes a TESTING version you launch right here on YOUR box, you
+iterate on real behaviour, and only when you ask does it package a RELEASE version. Then
+with one button it can also pack the tool into a single-file Linux binary via PyInstaller.
 
-Built for Linux from the ground up:
+Built for the Linux desktop from the ground up:
   - paths via pathlib + XDG dirs (~/.config, ~/.local/share)
   - process management with POSIX session/signal handling
   - GUI toolkits installed via pip into a managed venv
   - generated tools ship an install.sh (curl|bash) and a .desktop entry with an icon
-  - the model is taught to write Linux GUI code that works under BOTH Wayland (Phosh)
-    and X11 (KDE), and to stay responsive on a narrow phone screen
+  - the model is taught to write desktop GUI code that works under BOTH Wayland and X11,
+    looks intentional, and never freezes the window
 
 This file is a tiny local HTTP server (standard library only). It:
   - serves the workspace UI to your browser
@@ -52,7 +52,7 @@ import urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --------------------------------------------------------------------------
@@ -63,24 +63,15 @@ IS_MAC = platform.system() == "Darwin"
 IS_LINUX = not IS_WIN and not IS_MAC
 
 def detect_desktop_env():
-    """Classify the running Linux session so the UI can lay itself out for the
-    right machine. Returns a dict the browser uses to pick a layout:
+    """Classify the running Linux session for the UI. Returns a dict:
 
-      {"de": "phosh"|"kde"|"gnome"|"other", "form": "mobile"|"desktop",
+      {"de": "kde"|"gnome"|"xfce"|"cinnamon"|"other", "form": "desktop",
        "session": "wayland"|"x11"|"unknown", "raw": "<XDG_CURRENT_DESKTOP>"}
 
-    Phosh (mobile GNOME shell on the OnePlus 6) -> a narrow, stacked, touch
-    layout; KDE Plasma (and other desktops) -> the wide two-pane layout.
-
-    Detection reads the freedesktop environment variables every session sets:
-      - XDG_CURRENT_DESKTOP : ':'-joined desktop names (e.g. "Phosh:GNOME",
-        "KDE", "GNOME"). This is the primary signal.
-      - XDG_SESSION_TYPE / WAYLAND_DISPLAY : wayland vs x11.
-      - PHOSH_* vars and the "phone" form factor hint Phosh exports.
-
-    Everything degrades gracefully: on non-Linux, or when nothing is set, we
-    report "other"/"desktop" so the wide layout is used. The browser can always
-    override this with its own saved preference — this is only the default.
+    TheDawg targets the Linux desktop, so `form` is always "desktop"; `de` and
+    `session` are informational. Detection reads the freedesktop env vars every
+    session sets (XDG_CURRENT_DESKTOP, XDG_SESSION_TYPE/WAYLAND_DISPLAY) and
+    degrades gracefully to "other"/"desktop" when nothing is set.
     """
     raw = os.environ.get("XDG_CURRENT_DESKTOP", "") or ""
     desk = raw.lower()
@@ -89,24 +80,18 @@ def detect_desktop_env():
         sess = "wayland" if os.environ.get("WAYLAND_DISPLAY") else (
             "x11" if os.environ.get("DISPLAY") else "unknown")
 
-    # Phosh sets XDG_CURRENT_DESKTOP to include "Phosh"; it also exports a few
-    # PHOSH_* vars. Treat any of those as the mobile shell.
-    is_phosh = ("phosh" in desk
-                or any(k.startswith("PHOSH_") for k in os.environ)
-                or os.environ.get("GNOME_SHELL_SESSION_MODE", "").lower() == "phosh")
-
-    if is_phosh:
-        de, form = "phosh", "mobile"
-    elif "kde" in desk or "plasma" in desk:
-        de, form = "kde", "desktop"
+    if "kde" in desk or "plasma" in desk:
+        de = "kde"
     elif "gnome" in desk:
-        de, form = "gnome", "desktop"
-    elif desk:
-        de, form = "other", "desktop"
+        de = "gnome"
+    elif "xfce" in desk:
+        de = "xfce"
+    elif "cinnamon" in desk:
+        de = "cinnamon"
     else:
-        de, form = "other", "desktop"
+        de = "other"
 
-    return {"de": de, "form": form, "session": sess, "raw": raw}
+    return {"de": de, "form": "desktop", "session": sess, "raw": raw}
 
 def app_data_dir():
     """Per-OS app data dir (writes that should persist + survive)."""
@@ -237,14 +222,14 @@ PORT = 8765
 
 # This is the heart of it: the model is taught to build GRAPHICAL tools the way a
 # careful senior engineer does -- agree first, testing version by default, release
-# only on request. It targets Linux (Kali / Phosh / KDE Plasma). Tune to taste.
+# only on request. It targets the LINUX DESKTOP (KDE Plasma/X11 primary). Tune to taste.
 SYSTEM_PROMPT = """You are TheDawg, a senior Python engineer who builds small, sharp, genuinely
-working GRAPHICAL (GUI) desktop tools for LINUX from a single-file script. The target machines are
-Kali Linux on two setups: Phosh (the mobile GNOME shell, Wayland, on a OnePlus 6 — small touch
-screen, portrait-friendly) and KDE Plasma on X11 (desktop, mouse + keyboard). Every tool you produce
-opens a real window — never a bare command-line script. You write the kind of code a careful
-professional ships: correct, defensive, readable, responsive. Hold yourself to that bar regardless
-of how the request is phrased.
+working GRAPHICAL (GUI) tools for the LINUX DESKTOP from a single-file script. The primary target is
+Kali Linux on KDE Plasma (X11, desktop, mouse + keyboard), and the tool should be at home on any
+desktop (GNOME, XFCE, Cinnamon, …) under either Wayland or X11. Every tool you produce opens a real
+window — never a bare command-line script. You write the kind of code a careful professional ships:
+correct, defensive, readable, responsive — AND it should look intentional and feel good to use, not
+like a thrown-together debug window. Hold yourself to that bar regardless of how the request is phrased.
 
 TOOLKIT (pick ONE per tool — the user is asked in the intake; honour their choice exactly):
 - Tkinter — stdlib, no pip install (on Kali/Debian it needs the system package `python3-tk`,
@@ -252,7 +237,7 @@ TOOLKIT (pick ONE per tool — the user is asked in the intake; honour their cho
 - CustomTkinter — modern, themed Tkinter (`pip install customtkinter`). Drop-in upgrade to
   Tkinter with a polished look. Use when the user wants something nicer than raw Tk.
 - PyQt5 / PyQt6 / PySide6 — most polished and feature-rich; `pip install`. Qt sits most naturally
-  on KDE Plasma and also renders well under Phosh. Best for serious, feature-rich tools.
+  on KDE Plasma. Best for serious, feature-rich tools.
 - wxPython — only if explicitly requested; pip install but compilation can be slow.
 Whatever you choose, stay on ONE toolkit for the whole tool. Never mix toolkits.
 
@@ -266,22 +251,40 @@ LINUX ENGINEERING (apply to EVERY tool — non-negotiable):
 - Encoding: pass `encoding="utf-8"` to `subprocess.run/Popen` text mode and to file `open()`.
 - POSIX is fine to use directly (os.setsid, signal.SIGTERM, etc.) — no Windows guards needed. Do
   NOT import Windows-only modules (msvcrt, winreg, win32api) or write any Windows code paths.
-- DISPLAY SERVER AWARENESS: the same code must run under BOTH Wayland (Phosh) and X11 (KDE). Don't
-  assume one — never hardcode `DISPLAY=:0`, don't shell out to `xdotool`/`wmctrl` for core function
-  (X11-only), and prefer the toolkit's own APIs for clipboard, screenshots, and window control so
-  they work on both. If a feature is genuinely X11-only, detect `os.environ.get("WAYLAND_DISPLAY")`
-  and degrade gracefully with an explanatory message.
-- TOUCH + SMALL SCREEN (Phosh): the OnePlus 6 screen is narrow and portrait. Make windows resize
-  cleanly down to ~360px wide, keep controls finger-sized, let content scroll vertically rather than
-  needing a wide window, and never rely on hover-only interactions.
+- DISPLAY SERVER AWARENESS: the same code must run under BOTH X11 and Wayland. Don't assume one —
+  never hardcode `DISPLAY=:0`, don't shell out to `xdotool`/`wmctrl` for core function (X11-only),
+  and prefer the toolkit's own APIs for clipboard, screenshots, and window control so they work on
+  both. If a feature is genuinely X11-only, detect `os.environ.get("WAYLAND_DISPLAY")` and degrade
+  gracefully with an explanatory message.
+
+UX & VISUAL QUALITY (this is what separates a tool you'd keep from a throwaway — apply to EVERY tool):
+- WINDOW BASICS: set a descriptive window title (the tool's name, not "tk"), a sensible default size,
+  and a reasonable minimum size so the layout never collapses. Let the WM place it; don't force an
+  off-screen geometry.
+- BREATHING ROOM: pad the window and group related controls with consistent spacing (e.g. Tk
+  `padx/pady` ~8–12, Qt layout margins/spacing). Cramped, edge-to-edge widgets read as unfinished.
+  Group related fields in a labelled frame/group box; separate the primary actions from the inputs.
+- CLEAR HIERARCHY: one obvious primary action (the button that does the thing), visually distinct
+  from secondary actions. Label every field; never leave the user guessing what an entry is for.
+- KEYBOARD: focus the first meaningful field on open. Bind Enter to the primary action where it makes
+  sense, and Escape to close dialogs. A quit accelerator (Ctrl+Q) is a nice touch on a real app.
+- FEEDBACK & STATE: show progress for any non-instant work (a status label, progress bar, or
+  "working…" text), disable the action button while it runs and re-enable it after. Show success and
+  failure plainly in the window — never only on the console. Give empty states a hint ("drop a file
+  here", "no results yet") instead of a blank pane.
+- READABLE OUTPUT: present results in the right widget — a real table/treeview for rows, a scrolling
+  monospace text area for logs/output, not a cramped single-line label. Make output selectable and,
+  where it helps, copyable or savable.
+- RESTRAINT: match the polish to the job. A two-field utility should be clean and minimal, not buried
+  in chrome. Don't invent features the user didn't ask for — make the agreed job pleasant to do.
 
 GUI ENGINEERING STANDARDS:
 - It must actually open a window and do the agreed job when launched. Mentally trace startup,
   the main interaction, and the obvious failure paths before you output.
-- RESPONSIVE LAYOUT. Set a sane default size (e.g. 720x560 desktop / comfortable when narrowed for
-  Phosh), allow the window to resize, and let content scroll/reflow rather than clip. Use the
-  toolkit's layout managers (grid, pack with expand=True, Qt layouts) — never hardcoded pixel
-  positions that overflow on a different DPI.
+- RESPONSIVE LAYOUT. Set a sane default size (e.g. 760x560), a minimum size, allow the window to
+  resize, and let content scroll/reflow rather than clip. Use the toolkit's layout managers
+  (grid, pack with expand=True, Qt layouts) — never hardcoded pixel positions that overflow on a
+  different DPI.
 - NEVER FREEZE THE UI. Any work that blocks — network calls, file scans, subprocess runs, large
   reads — MUST run off the main thread (`threading.Thread`) and marshal results back to the GUI
   thread safely (`widget.after` for Tkinter, signals for Qt). The window must stay responsive
@@ -358,9 +361,9 @@ only planning or discussing, include no code block at all."""
 
 # Used to generate a tailored, clickable intake for a new tool request.
 INTAKE_PROMPT = """You are the requirements analyst for TheDawg, a builder of GRAPHICAL (GUI) Python
-tools for LINUX — specifically Kali on Phosh (mobile GNOME, Wayland, small touch screen) and KDE
-Plasma (X11, desktop). The user wants to build a tool. Produce the SHORT, HIGH-VALUE set of
-questions needed to build EXACTLY the right Linux GUI — no lazy or generic filler.
+tools for the LINUX DESKTOP — primarily Kali on KDE Plasma (X11), and at home on any desktop
+(GNOME, XFCE, Cinnamon) under Wayland or X11. The user wants to build a tool. Produce the SHORT,
+HIGH-VALUE set of questions needed to build EXACTLY the right desktop GUI — no lazy or generic filler.
 
 Return ONLY a JSON object, no prose, no markdown fences:
 {"summary": "<one line restating the Linux GUI tool they want to build>",
@@ -380,8 +383,8 @@ Rules:
   wraps an external Linux binary (and which one — many Kali tools shell out to things like nmap,
   tcpdump, aircrack-ng) or is pure-Python, and how results are presented/exported (in-window list,
   save to file, copy to clipboard).
-- Do NOT ask which OS — it is always Linux. Only ask about an OS-feature when it matters (e.g.
-  "show desktop notifications? — yes / no", or "does this need to run on the Phosh phone too?").
+- Do NOT ask which OS — it is always the Linux desktop. Only ask about an OS-feature when it matters
+  (e.g. "show desktop notifications? — yes / no").
 - 2 to 4 options per question. Options must be concrete and mutually distinct. Set "multi": true
   only when picking several genuinely makes sense.
 - Prefer options the user can just tap. Keep them short."""
@@ -414,9 +417,9 @@ Rules:
   only what the assistant actually asked."""
 
 # Used by the GitHub-ready flow to assemble repo files from the user's answers.
-GITHUB_PROMPT = """You are preparing a polished GitHub release of a LINUX Python GUI tool (targets
-Kali on Phosh and KDE Plasma). You will be given the final code and the user's repo details.
-Produce a complete, professional repo.
+GITHUB_PROMPT = """You are preparing a polished GitHub release of a LINUX desktop Python GUI tool
+(primary target Kali on KDE Plasma; runs on any desktop under Wayland or X11). You will be given the
+final code and the user's repo details. Produce a complete, professional repo.
 
 Return ONLY a JSON object, no prose, no markdown fences:
 {"readme": "<full README.md markdown>",
@@ -426,14 +429,14 @@ Return ONLY a JSON object, no prose, no markdown fences:
 
 README requirements:
 - Title, one-line description, then a short paragraph: what the GUI does and that it is a native
-  Linux tool (tested on Kali / Phosh / KDE Plasma).
+  Linux desktop tool (tested on Kali / KDE Plasma; works under Wayland or X11).
 - A "Requirements" section listing Python ≥ 3.8 and the pip packages from requirements.txt (or
   noting "pure standard library" if there are none). If the tool uses Tkinter, note the system
   package `sudo apt install python3-tk`.
 - An "Install" section with ONE one-line installer:
     curl -fsSL https://raw.githubusercontent.com/<user>/<repo>/<branch>/install.sh | bash
   The same line should work for updates (re-running it). Use the exact user/repo/branch given.
-- A "Usage" section: launch from the app grid / launcher, or by running `<name>` from a terminal,
+- A "Usage" section: launch from the app menu / launcher, or by running `<name>` from a terminal,
   and a sentence on the main window. Keep it real and copy-pasteable.
 - The license name. Clean, scannable, professional. No fluff.
 
@@ -443,9 +446,9 @@ empty string."""
 
 # Used by the "review my code" button: a focused critique that DIAGNOSES, never rewrites.
 REVIEW_PROMPT = """You are a senior Python/GUI engineer doing a careful code review of a single-file
-Linux tool (Tkinter / CustomTkinter / PyQt / PySide), targeting Kali on Phosh (Wayland) and KDE
-Plasma (X11). You are given the FULL code and, separately, the findings of an automated static
-analyzer. Your job is to REVIEW, not rewrite — do NOT output a corrected script.
+Linux desktop tool (Tkinter / CustomTkinter / PyQt / PySide), primary target Kali on KDE Plasma,
+running under either Wayland or X11. You are given the FULL code and, separately, the findings of an
+automated static analyzer. Your job is to REVIEW, not rewrite — do NOT output a corrected script.
 
 Look hard for things that will actually bite the user:
 - logic errors and clashes: functions called with wrong/!args, methods that don't exist on the
@@ -454,8 +457,11 @@ Look hard for things that will actually bite the user:
   widget.after / signals when updating the UI from a thread, missing graceful handling when the
   toolkit isn't installed
 - LINUX/DISPLAY: hardcoded paths like "/tmp"; missing encoding="utf-8" on text I/O; shell=True with
-  user input; X11-only assumptions (xdotool/wmctrl, hardcoded DISPLAY) that break under Wayland on
-  Phosh; layouts that can't narrow to a phone-width window
+  user input; X11-only assumptions (xdotool/wmctrl, hardcoded DISPLAY) that break under Wayland
+- UX & POLISH: no window title or sane min-size; cramped, unpadded layout; no progress/feedback for
+  slow work; the action button not disabled while running; errors shown only on stderr instead of in
+  the window; a blank empty state with no hint; output crammed into a single label instead of a real
+  table or scrollable text area
 - correctness: unhandled error paths, resource leaks, race conditions, off-by-one, wrong defaults
 - dead or contradictory code, and anything that simply won't do what it claims
 
@@ -1474,6 +1480,8 @@ def analyze_with_ast(code):
     # Runs as a shared helper so it also supplements Ruff (which doesn't catch this).
     if not star_import:
         issues.extend(_unassigned_self_attrs(tree))
+    # --- high-confidence quality findings (silent except: pass, shell injection) ---
+    issues.extend(_extra_safety_findings(tree))
 
     # de-dup and cap so we never flood the model
     seen, uniq = set(), []
@@ -1546,6 +1554,67 @@ def _unassigned_self_attrs(tree):
                            f"__init__, or fix the name)")
     return out
 
+def _extra_safety_findings(tree):
+    """A small set of HIGH-CONFIDENCE quality findings the system prompt explicitly
+    forbids, so the model can clean them up. Engine-independent (used by both the Ruff
+    and the ast paths). Kept deliberately narrow to avoid flagging correct code:
+
+      1. SILENT FAILURE: a bare `except:` or a broad `except Exception/BaseException:`
+         whose body does nothing but `pass` (or `...`). That swallows every error with
+         no message — exactly the "it silently did nothing" bug the standards prohibit.
+      2. SHELL INJECTION: `subprocess.run/Popen/call/check_output/check_call(..., shell=True)`
+         where the command is NOT a constant string (a variable/f-string/concatenation),
+         or any `os.system(...)` / `os.popen(...)` with a non-constant argument. Both run
+         a string through the shell, so a built-from-input command is an injection risk —
+         the standards require a list argv instead.
+    Returns a list of issue strings (possibly empty). Caller de-dups."""
+    import ast
+    out = []
+    SHELL_FUNCS = {"run", "Popen", "call", "check_output", "check_call"}
+    for n in ast.walk(tree):
+        # --- 1. silent except: pass ---
+        if isinstance(n, ast.ExceptHandler):
+            body = [s for s in n.body if not (isinstance(s, ast.Expr)
+                    and isinstance(getattr(s, "value", None), ast.Constant)
+                    and isinstance(s.value.value, str))]   # drop a docstring-only line
+            only_pass = all(isinstance(s, ast.Pass) for s in body) and len(body) > 0
+            if not body:  # body was just a string/ellipsis expression
+                only_pass = True
+            etype = n.type
+            broad = (etype is None
+                     or (isinstance(etype, ast.Name) and etype.id in ("Exception", "BaseException")))
+            if only_pass and broad:
+                ln = getattr(n, "lineno", "?")
+                out.append(f"L{ln} silent-failure: a broad 'except: pass' swallows every error "
+                           f"with no message (forbidden — surface the failure in the window, or "
+                           f"narrow the except and handle it)")
+        # --- 2. shell injection ---
+        if isinstance(n, ast.Call):
+            f = n.func
+            # subprocess.<func>(..., shell=True, ...) with non-constant command
+            is_subprocess = (isinstance(f, ast.Attribute) and f.attr in SHELL_FUNCS
+                             and isinstance(f.value, ast.Name) and f.value.id == "subprocess")
+            if is_subprocess:
+                shell_true = any(k.arg == "shell" and isinstance(k.value, ast.Constant)
+                                 and k.value.value is True for k in n.keywords)
+                cmd = n.args[0] if n.args else None
+                cmd_const = isinstance(cmd, ast.Constant)
+                if shell_true and cmd is not None and not cmd_const:
+                    ln = getattr(n, "lineno", "?")
+                    out.append(f"L{ln} shell-injection: subprocess.{f.attr}(..., shell=True) with a "
+                               f"built command runs it through the shell (injection risk — pass a "
+                               f"list argv and drop shell=True)")
+            # os.system(x) / os.popen(x) with a non-constant arg
+            is_ossys = (isinstance(f, ast.Attribute) and f.attr in ("system", "popen")
+                        and isinstance(f.value, ast.Name) and f.value.id == "os")
+            if is_ossys:
+                cmd = n.args[0] if n.args else None
+                if cmd is not None and not isinstance(cmd, ast.Constant):
+                    ln = getattr(n, "lineno", "?")
+                    out.append(f"L{ln} shell-injection: os.{f.attr}() runs a built string through "
+                               f"the shell (injection risk — use subprocess with a list argv)")
+    return out
+
 def code_map(code):
     """Build a compact structural map of the current tool: imports, top-level
     functions (with signatures), and classes (with their methods). Given to the
@@ -1605,8 +1674,9 @@ def analyze_code(code):
     ruff_issues = analyze_with_ruff(code)
     if ruff_issues is not None:
         # Ruff is fast and deep on style/logic but does NOT track instance attributes.
-        # Supplement it with our high-confidence self.<attr>-never-assigned pass so the
-        # most common runtime AttributeError is caught regardless of which engine runs.
+        # Supplement it with our high-confidence self.<attr>-never-assigned pass plus the
+        # extra safety findings (silent except: pass, shell injection) so those are caught
+        # regardless of which engine runs.
         supplemental = []
         try:
             import ast as _ast
@@ -1614,6 +1684,7 @@ def analyze_code(code):
             if not any(isinstance(n, _ast.ImportFrom) and any(a.name == "*" for a in n.names)
                        for n in _ast.walk(tree)):
                 supplemental = _unassigned_self_attrs(tree)
+            supplemental = supplemental + _extra_safety_findings(tree)
         except SyntaxError:
             pass
         merged = ruff_issues + [s for s in supplemental if s not in ruff_issues]
@@ -1816,7 +1887,12 @@ def chat_with_autotest(messages, provider_id=None):
         if cmap:
             fix_msg += f"\n=== structure of the code you just wrote (keep calls consistent) ===\n{cmap}\n"
         fix_msg += ("\nDo not introduce new problems. Re-check that every function is called with "
-                    "the right arguments and every name is defined before use.")
+                    "the right arguments and every name is defined before use. Quick pass on the "
+                    "usual Linux-GUI traps: any widget a thread/callback touches is stored on self; "
+                    "thread results marshalled back to the GUI thread (widget.after / signals, never "
+                    "a direct widget call from a worker); the toolkit import wrapped so a missing "
+                    "toolkit shows a clear message, not a traceback; no bare except: pass; no "
+                    "shell=True on a built command; encoding=\"utf-8\" on text I/O.")
         convo = convo + [
             {"role": "assistant", "content": res["reply"]},
             {"role": "user", "content": fix_msg},
@@ -2154,11 +2230,11 @@ def save_tool(code, name, kind):
                 pip_note = f"\n\nNeeds: `{tk['apt_hint']}`"
             readme.write_text(
                 f"# {name}\n\nA Linux graphical tool built with TheDawg "
-                f"(tested on Kali / Phosh / KDE Plasma).{pip_note}\n\n"
+                f"(tested on Kali / KDE Plasma).{pip_note}\n\n"
                 f"## Usage\n\n```bash\n{launch_lin}\n```\n",
                 encoding="utf-8")
         # .desktop entry so a GUI tool appears in the app menu / grid. StartupWMClass
-        # helps Phosh and KDE bind the running window to this entry.
+        # helps KDE/GNOME bind the running window to this entry.
         if tk:
             dt = d / (name + ".desktop")
             dt.write_text(
@@ -2270,7 +2346,7 @@ echo "installed {name}. launch from your app grid (Linux), or run: {name}"
 def write_github_repo(code, name, gh, details):
     """Write a complete polished repo into ~/thedawg-tools/github/<repo>/.
     Includes install.sh (Linux, curl|bash) so a release installs cleanly on Kali
-    (Phosh & KDE Plasma) and other Linux desktops."""
+    (KDE Plasma) and other Linux desktops, under Wayland or X11."""
     name = re.sub(r"[^A-Za-z0-9_\-]", "_", (name or "tool")).strip("_") or "tool"
     user = details.get("username", "USER")
     repo = re.sub(r"[^A-Za-z0-9_.\-]", "-", details.get("repo", name)) or name
@@ -2293,7 +2369,7 @@ def write_github_repo(code, name, gh, details):
     # README (AI-generated, with fallback)
     fallback_readme = (
         f"# {repo}\n\n{gh.get('description', 'A Linux graphical Python tool built with TheDawg.')}\n\n"
-        f"A native **Linux** GUI tool — tested on Kali (Phosh & KDE Plasma).\n\n"
+        f"A native **Linux desktop** GUI tool — tested on Kali (KDE Plasma).\n\n"
         f"## Install\n\n"
         f"```bash\ncurl -fsSL https://raw.githubusercontent.com/{user}/{repo}/{branch}/install.sh | bash\n```\n\n"
         f"## Usage\n\nLaunch from your app grid / launcher, or run `{name}` in a terminal.\n"
@@ -2327,7 +2403,7 @@ def write_github_repo(code, name, gh, details):
         except Exception: pass
 
     # .desktop entry — for Linux users to drop into ~/.local/share/applications.
-    # StartupWMClass helps Phosh/KDE bind the running window to this entry's icon.
+    # StartupWMClass helps KDE/GNOME bind the running window to this entry's icon.
     desktop = (
         "[Desktop Entry]\n"
         "Type=Application\n"
@@ -2816,7 +2892,7 @@ def launch_app_window(url):
             # On Linux, set the window's WM class / Wayland app_id to "thedawg" so it
             # matches StartupWMClass in the .desktop entry. Without this the running
             # window shows a generic Chromium icon in the KDE Plasma task switcher and
-            # the Phosh (mobile GNOME) overview instead of the Dawg icon.
+            # the GNOME/other desktop overview instead of the Dawg icon.
             if IS_LINUX:
                 argv.insert(1, "--class=thedawg")
             subprocess.Popen(

@@ -12,7 +12,7 @@
   :root{
     --bg:#0c0e0f; --bg2:#101315; --panel:#15191b; --panel2:#1a1f22;
     --line:#262d31; --line2:#1d2225;
-    --ink:#e7eaeb; --dim:#8a9398; --faint:#596268; --steel:#c7ced2;
+    --ink:#e7eaeb; --dim:#8a9398; --faint:#6d767c; --steel:#c7ced2;
     --amber:#e8a33d; --ember:#e07a3a; --lime:#9fe04a; --cyan:#46c7d4; --red:#e0594a;
     --mag:#c79be0;
     --mono:"JetBrains Mono",ui-monospace,monospace;
@@ -30,18 +30,18 @@
       radial-gradient(700px 360px at 50% -10%, rgba(70,90,100,.08), transparent 60%),
       var(--bg);
   }
-  body::before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.5;z-index:0;
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.32;z-index:0;
     background-image:linear-gradient(rgba(255,255,255,.014) 1px,transparent 1px),
       linear-gradient(90deg,rgba(255,255,255,.014) 1px,transparent 1px);
     background-size:30px 30px;}
 
-  .app{display:grid;grid-template-rows:34px 54px 1fr;height:100vh;position:relative;z-index:1}
+  .app{display:grid;grid-template-rows:34px 54px 30px 1fr;height:100vh;position:relative;z-index:1}
 
   /* South Park-style snowy mountain-town background (faded so the UI stays readable) */
   .bg-fx{position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none}
   .bg-town{position:absolute;inset:0;width:100%;height:100%;
-    opacity:.16;animation:townbreathe 18s ease-in-out infinite}
-  @keyframes townbreathe{0%,100%{opacity:.13}50%{opacity:.19}}
+    opacity:.085;animation:townbreathe 18s ease-in-out infinite}
+  @keyframes townbreathe{0%,100%{opacity:.07}50%{opacity:.11}}
   /* gently drifting snow — three parallax layers, seamless vertical loop */
   .snow{animation:snowfall linear infinite}
   .snow-a{animation-duration:27s}
@@ -49,7 +49,7 @@
   .snow-c{animation-duration:13s}
   @keyframes snowfall{from{transform:translateY(0)}to{transform:translateY(800px)}}
   .bg-scan{position:absolute;inset:0;background:repeating-linear-gradient(
-    0deg,transparent 0 3px,rgba(0,0,0,.18) 3px 4px);mix-blend-mode:multiply;opacity:.42}
+    0deg,transparent 0 3px,rgba(0,0,0,.18) 3px 4px);mix-blend-mode:multiply;opacity:.2}
 
   /* titlebar */
   .titlebar{display:flex;align-items:center;gap:12px;padding:0 12px;
@@ -100,6 +100,20 @@
   .icon-btn{background:var(--panel);border:1px solid var(--line);border-radius:8px;color:var(--dim);
     width:34px;height:34px;cursor:pointer;font-size:15px;transition:.13s;display:grid;place-items:center}
   .icon-btn:hover{color:var(--ink);border-color:var(--amber)}
+
+  /* step rail — the agree → test → iterate → release flow, always visible */
+  .steprail{display:flex;align-items:center;gap:8px;padding:0 16px;z-index:4;
+    background:linear-gradient(180deg,#0f1416,#0c0f1000);border-bottom:1px solid var(--line)}
+  .steprail .step{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10px;
+    letter-spacing:.13em;text-transform:uppercase;color:var(--faint);transition:.22s}
+  .steprail .step i{display:grid;place-items:center;width:16px;height:16px;border-radius:50%;
+    border:1px solid var(--line);font-style:normal;font-size:9px;font-weight:700;color:var(--faint);
+    background:var(--panel);transition:.22s}
+  .steprail .step.on{color:var(--amber)}
+  .steprail .step.on i{border-color:var(--amber);color:#1c1407;background:var(--amber)}
+  .steprail .step.done{color:var(--lime)}
+  .steprail .step.done i{border-color:var(--lime);color:#11210a;background:var(--lime)}
+  .steprail .sep{flex:0 1 26px;height:1px;background:var(--line)}
 
   /* main split — desktop two columns */
   .main{display:grid;grid-template-columns:480px 1fr;min-height:0}
@@ -186,7 +200,9 @@
   .wh{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line2);background:var(--bg2);flex-wrap:wrap;min-width:0}
   .wh .label{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--faint);text-transform:uppercase}
   .wh .fname{font-family:var(--mono);font-size:12px;color:var(--steel)}
-  .wh .acts{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+  .wh .acts{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+  .act-group{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .act-div{width:1px;align-self:stretch;min-height:20px;background:var(--line);margin:0 5px}
   .btn{background:var(--panel);border:1px solid var(--line);border-radius:8px;color:var(--ink);
     font-family:var(--ui);font-weight:600;font-size:12.5px;padding:7px 13px;cursor:pointer;
     transition:.13s;display:inline-flex;align-items:center;gap:7px}
@@ -233,6 +249,12 @@
   .empty .steps{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:4px}
   .empty .steps span{font-family:var(--mono);font-size:10.5px;color:var(--dim);
     border:1px solid var(--line);border-radius:20px;padding:4px 11px;background:var(--panel)}
+  .empty .starters-h{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--faint);margin-top:10px}
+  .empty .starters{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:8px;max-width:460px}
+  .starter{font-family:var(--ui);font-size:12px;color:var(--steel);background:var(--panel);
+    border:1px solid var(--line);border-radius:20px;padding:6px 13px;cursor:pointer;transition:.13s}
+  .starter:hover{border-color:var(--amber);color:#fff}
 
   /* test console */
   .testtop{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line2);background:var(--bg2)}
@@ -574,6 +596,17 @@
     <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
   </div>
 
+  <!-- step rail: where you are in the build flow -->
+  <div class="steprail" id="stepRail">
+    <span class="step on" data-step="agree"><i>1</i> agree</span>
+    <span class="sep"></span>
+    <span class="step" data-step="test"><i>2</i> test</span>
+    <span class="sep"></span>
+    <span class="step" data-step="iterate"><i>3</i> iterate</span>
+    <span class="sep"></span>
+    <span class="step" data-step="release"><i>4</i> release</span>
+  </div>
+
   <!-- main -->
   <div class="main">
     <!-- dialogue -->
@@ -607,15 +640,20 @@
           <span class="label">tool</span>
           <span class="fname" id="codeFile">no draft yet</span>
           <div class="acts">
-            <button class="btn ghost" id="diffBtn" disabled title="Show what changed in the last version">⇄ diff</button>
-            <button class="btn ghost" id="reviewBtn" disabled title="AI + static analysis review of the whole tool">🔍 review</button>
-            <button class="btn ghost" id="editBtn" disabled title="Edit the code yourself">✎ edit</button>
-            <button class="btn ghost" id="depsBtn" disabled title="Detect &amp; install third-party packages">⬇ deps</button>
-            <button class="btn ghost" id="copyBtn" disabled>⧉ copy</button>
-            <button class="btn ghost" id="libSaveBtn" disabled title="Save to library">★ library</button>
-            <button class="btn release" id="releaseBtn" disabled>◆ get ready for GitHub</button>
-            <button class="btn" id="saveBtn" disabled>⤓ save</button>
-            <button class="btn build" id="buildBtn" disabled title="Pack into a single-file Linux binary (PyInstaller)">⬛ build</button>
+            <span class="act-group inspect">
+              <button class="btn ghost" id="reviewBtn" disabled title="AI + static analysis review of the whole tool">🔍 review</button>
+              <button class="btn ghost" id="diffBtn" disabled title="Show what changed in the last version">⇄ diff</button>
+              <button class="btn ghost" id="editBtn" disabled title="Edit the code yourself">✎ edit</button>
+              <button class="btn ghost" id="depsBtn" disabled title="Detect &amp; install third-party packages">⬇ deps</button>
+              <button class="btn ghost" id="copyBtn" disabled>⧉ copy</button>
+            </span>
+            <span class="act-div"></span>
+            <span class="act-group ship">
+              <button class="btn ghost" id="libSaveBtn" disabled title="Save to library">★ library</button>
+              <button class="btn" id="saveBtn" disabled>⤓ save</button>
+              <button class="btn release" id="releaseBtn" disabled>◆ get ready for GitHub</button>
+              <button class="btn build" id="buildBtn" disabled title="Pack into a single-file Linux binary (PyInstaller)">⬛ build</button>
+            </span>
           </div>
         </div>
         <div class="codebody" id="codeBody">
@@ -624,6 +662,13 @@
             <h2>Nothing on the anvil yet</h2>
             <p>Describe a tool on the left. We'll agree on what it should do, I'll forge a <b style="color:var(--amber)">testing version</b> — a real <b style="color:var(--cyan)">GUI app</b> built for <b>Linux</b> — you launch it right here, and when it's right I'll package the <b style="color:var(--lime)">release version</b> for GitHub <i>or</i> pack it into a single-file Linux binary with <b style="color:var(--lime)">⬛ build</b>.</p>
             <div class="steps"><span>1 · agree</span><span>2 · test</span><span>3 · iterate</span><span>4 · release</span></div>
+            <div class="starters-h">try one — tap to load it</div>
+            <div class="starters">
+              <button class="starter" data-fill="A checksum verifier: I drag a file onto the window, it shows the MD5, SHA-1 and SHA-256, and lets me paste an expected hash to compare against with a green/red result.">checksum verifier</button>
+              <button class="starter" data-fill="A bulk file renamer with a live preview — pick a folder, set a find/replace or a numbered pattern, see the before/after list, and apply only when I confirm.">bulk file renamer</button>
+              <button class="starter" data-fill="A subnet ping sweeper for my own home network: I enter a CIDR like 192.168.1.0/24, it pings each host and shows which are up, with hostnames where it can resolve them.">subnet ping sweeper</button>
+              <button class="starter" data-fill="A QR code generator: type or paste text or a URL, see the QR update live, and save it as a PNG.">QR code generator</button>
+            </div>
           </div>
         </div>
         <div class="editbar" id="editBar" style="display:none">
@@ -812,7 +857,7 @@ document.addEventListener("keydown", e=>{
 let state = {
   messages: [], code: null, name: "tool", version: "testing",
   busy: false, pendingRelease: false, intakeDone: false, intakeAnswers: {},
-  prevCode: null, sessionId: null, attachments: [], lastError: null,
+  prevCode: null, sessionId: null, attachments: [], lastError: null, hasRun: false,
   ghUser: "", ghHolder: "", _panelTab: "sessions", _intakeQs: null, _followupEl: null,
 };
 let providers = [];
@@ -909,6 +954,7 @@ async function init(){
   }catch(e){ $("#modelName").textContent = "server offline"; }
   greet();
   playSound("startup");
+  updateSteps();
 }
 
 /* ============================ providers (top bar) ============================ */
@@ -1171,6 +1217,33 @@ function splitReply(reply){
   return {prose, code};
 }
 
+/* ============================ step rail ============================ */
+const STEP_ORDER = ["agree","test","iterate","release"];
+function currentPhase(){
+  if(!state.code) return "agree";
+  if(state.version==="release") return "release";
+  if(state.hasRun || state.lastError) return "iterate";
+  return "test";
+}
+function updateSteps(){
+  const ci = STEP_ORDER.indexOf(currentPhase());
+  document.querySelectorAll("#stepRail .step").forEach(el=>{
+    const i = STEP_ORDER.indexOf(el.dataset.step);
+    el.classList.toggle("on", i===ci);
+    el.classList.toggle("done", i<ci);
+  });
+}
+
+/* starter chips in the empty state — tap to load a prompt into the composer */
+document.addEventListener("click", e=>{
+  const s = e.target.closest(".starter");
+  if(!s) return;
+  input.value = s.dataset.fill || "";
+  input.dispatchEvent(new Event("input"));
+  input.focus();
+  toast("Loaded a starter — tweak it or hit forge");
+});
+
 /* ============================ code pane ============================ */
 function loadCode(code){
   state.prevCode=state.code; state.code=code; guessName(code);
@@ -1181,6 +1254,7 @@ function loadCode(code){
    "editBtn","depsBtn","libSaveBtn","reviewBtn","buildBtn"].forEach(id=>$("#"+id).disabled=false);
   $("#diffBtn").disabled=!state.prevCode;
   autosaveSession();
+  updateSteps();
 }
 let _autosaveTimer;
 function autosaveSession(){
@@ -1208,7 +1282,7 @@ function renderCode(code){
   pre.innerHTML=html.split("\n").map(l=>`<span class="line">${l||" "}</span>`).join("");
   body.appendChild(pre);
 }
-function setVersion(v){ state.version=v; const b=$("#verBadge"); b.className="badge "+v; b.textContent=v; }
+function setVersion(v){ state.version=v; const b=$("#verBadge"); b.className="badge "+v; b.textContent=v; updateSteps(); }
 
 $("#copyBtn").onclick=()=>{ navigator.clipboard.writeText(state.code||""); toast("Copied to clipboard"); };
 $("#saveBtn").onclick=save;
@@ -1350,7 +1424,7 @@ async function resumeSession(id){
   if(r.error){ toast(r.error, true); return; }
   const s=r.session;
   state.messages=s.messages||[]; state.name=s.name||s.id; state.sessionId=s.id;
-  state.intakeDone=true; state.prevCode=null; state.attachments=[]; renderAttachments();
+  state.intakeDone=true; state.prevCode=null; state.attachments=[]; state.hasRun=false; renderAttachments();
   $("#thread").innerHTML="";
   (s.messages||[]).forEach(m=>{
     if(m.role==="user") addMsg("you", m.content.replace(/```[\s\S]*?```/g,"[code]"));
@@ -1387,7 +1461,7 @@ async function loadFromLibrary(id){
   if(r.error){ toast("Couldn't load: "+r.error, true); return; }
   const tool=r.tool;
   state.messages=tool.messages||[]; state.name=tool.name||tool.id; state.intakeDone=true; state.prevCode=null;
-  state.sessionId=null; state.attachments=[]; renderAttachments();
+  state.sessionId=null; state.attachments=[]; state.hasRun=false; renderAttachments();
   $("#thread").innerHTML="";
   (tool.messages||[]).forEach(m=>{
     if(m.role==="user") addMsg("you", m.content.replace(/```[\s\S]*?```/g,"[code]"));
@@ -1511,6 +1585,7 @@ async function run(confirmed){
   try{ res=await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:state.code, args, confirm:confirmed, name:state.name})}).then(r=>r.json()); }
   catch(e){ con.innerHTML=`<span class="meta">${cmdLine}</span>\n\n<span class="bad">Couldn't reach the local TheDawg server. Is it still running in your terminal?</span>`; return; }
   if(res.needsConfirm){ $("#dangerPatts").textContent=res.patterns.join("   ·   "); openScrim("dangerScrim"); con.innerHTML=`<span class="placeholder">Blocked pending your confirmation.</span>`; return; }
+  state.hasRun=true; updateSteps();
   if(res.error){ con.innerHTML=`<span class="meta">${cmdLine}</span>\n\n<span class="bad">${esc(res.error)}</span>`; return; }
   if(res.gui){
     let html=`<span class="meta">${cmdLine}</span>\n\n`;
@@ -1662,16 +1737,23 @@ $("#scaleReset").onclick=()=>{ applyScale(1); toast("Interface size reset to 100
 /* ============================ new tool ============================ */
 $("#newBtn").onclick=()=>{
   state.messages=[]; state.code=null; state.name="tool"; state.pendingRelease=false; state.lastError=null;
-  state.intakeDone=false; state.intakeAnswers={}; state.attachments=[]; renderAttachments();
+  state.intakeDone=false; state.intakeAnswers={}; state.attachments=[]; state.hasRun=false; renderAttachments();
   setVersion("testing");
   $("#thread").innerHTML=""; $("#codeFile").textContent="no draft yet"; $("#fileName").textContent="untitled.py";
-  $("#codeBody").innerHTML=`<div class="empty"><img src="/assets/icon.svg" alt=""><h2>Nothing on the anvil yet</h2><p>Describe a GUI tool on the left to begin.</p></div>`;
+  $("#codeBody").innerHTML=`<div class="empty"><img src="/assets/icon.svg" alt=""><h2>Nothing on the anvil yet</h2><p>Describe a GUI tool on the left to begin — we'll agree on it, then I'll forge a testing version you can launch right here.</p>`
+    +`<div class="starters-h">try one — tap to load it</div><div class="starters">`
+    +`<button class="starter" data-fill="A checksum verifier: I drag a file onto the window, it shows the MD5, SHA-1 and SHA-256, and lets me paste an expected hash to compare against with a green/red result.">checksum verifier</button>`
+    +`<button class="starter" data-fill="A bulk file renamer with a live preview — pick a folder, set a find/replace or a numbered pattern, see the before/after list, and apply only when I confirm.">bulk file renamer</button>`
+    +`<button class="starter" data-fill="A subnet ping sweeper for my own home network: I enter a CIDR like 192.168.1.0/24, it pings each host and shows which are up, with hostnames where it can resolve them.">subnet ping sweeper</button>`
+    +`<button class="starter" data-fill="A QR code generator: type or paste text or a URL, see the QR update live, and save it as a PNG.">QR code generator</button>`
+    +`</div></div>`;
   $("#console").innerHTML=`<span class="placeholder">Launch output appears here.</span>`;
   $("#args").value=""; showStop(null);
   state.prevCode=null; state.sessionId=null;
   ["copyBtn","saveBtn","runBtn","releaseBtn","fixLogBtn","polishBtn","dlLogBtn","clearLogBtn",
    "editBtn","diffBtn","depsBtn","libSaveBtn","reviewBtn","buildBtn"].forEach(id=>$("#"+id).disabled=true);
   greet();
+  updateSteps();
 };
 
 /* ============================ utils ============================ */
