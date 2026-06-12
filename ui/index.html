@@ -83,12 +83,26 @@
   .logo .name{font-weight:700;letter-spacing:.02em;font-size:16px}
   .logo .name b{color:var(--amber)}
   .tool-chip{display:flex;align-items:center;gap:9px;padding:5px 11px;border-radius:8px;
-    background:var(--panel);border:1px solid var(--line);font-family:var(--mono);font-size:12px}
+    background:var(--panel);border:1px solid var(--line);font-family:var(--mono);font-size:12px;
+    cursor:pointer;transition:border-color .15s,background .15s}
+  .tool-chip:hover{border-color:var(--amber);background:rgba(232,163,61,.06)}
   .tool-chip .fn{color:var(--steel)}
+  .tool-chip.locked .fn{color:var(--ink)}
+  .tool-chip.locked .fn::after{content:"🔒";font-size:9px;margin-left:5px;opacity:.55}
   .badge{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;font-weight:700;
     padding:3px 7px;border-radius:5px;text-transform:uppercase}
   .badge.testing{background:rgba(232,163,61,.14);color:var(--amber);border:1px solid rgba(232,163,61,.3)}
   .badge.release{background:rgba(159,224,74,.14);color:var(--lime);border:1px solid rgba(159,224,74,.3)}
+  .badge.ver{background:rgba(120,160,255,.14);color:#9ab6ff;border:1px solid rgba(120,160,255,.3);text-transform:none;letter-spacing:.06em}
+  .shotwrap{margin-top:8px;border:1px solid var(--line);border-radius:8px;background:var(--panel);overflow:hidden}
+  .shotwrap .shot-h{display:flex;align-items:center;gap:8px;padding:6px 10px;font-family:var(--mono);
+    font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--steel);
+    border-bottom:1px solid var(--line);background:rgba(255,255,255,.02)}
+  .shotwrap .shot-h .verdict{font-weight:700}
+  .shotwrap .shot-h .verdict.good{color:var(--lime)} .shotwrap .shot-h .verdict.bad{color:#ff6b6b}
+  .shotwrap .shot-h .x{margin-left:auto;cursor:pointer;opacity:.7}
+  .shotwrap .shot-h .x:hover{opacity:1}
+  .shotwrap img{display:block;max-width:100%;max-height:340px;margin:0 auto;background:#0a0a0f}
   .spacer{flex:1}
   .model-pill{font-family:var(--mono);font-size:11px;color:var(--dim);display:flex;align-items:center;gap:7px;min-width:0}
   .model-pill #modelName{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -585,8 +599,9 @@
       <img src="/assets/icon.svg" alt="">
       <span class="name"><b>The</b>Dawg</span>
     </div>
-    <div class="tool-chip">
+    <div class="tool-chip" id="toolChip" title="Click to rename this tool — the name then locks and only the version moves">
       <span class="fn" id="fileName">untitled.py</span>
+      <span class="badge ver" id="semverBadge">v1.0.0</span>
       <span class="badge testing" id="verBadge">testing</span>
     </div>
     <div class="spacer"></div>
@@ -699,14 +714,23 @@
           <button class="btn stop" id="stopBtn" style="display:none" title="Close the running window">■ stop</button>
         </div>
         <div class="testbar">
+          <button class="btn ghost" id="probeBtn" disabled title="TheDawg opens the window itself on a hidden display, screenshots it, checks it isn't blank, and pokes it for crashes — no typing needed">🔎 self-test</button>
           <button class="btn ghost" id="fixLogBtn" disabled title="Send the full run log to the AI to diagnose and fix">⮐ send log to AI &amp; fix</button>
-          <button class="btn polish" id="polishBtn" disabled title="Loop: launch → fix → improve each pass">✦ auto-polish loop</button>
+          <button class="btn polish" id="polishBtn" disabled title="Loop: test → fix → improve each pass">✦ auto-polish loop</button>
           <span class="polish-status" id="polishStatus"></span>
           <span class="spacer"></span>
           <button class="btn ghost" id="dlLogBtn" disabled title="Download the full session log">⤓ log</button>
           <button class="btn ghost" id="clearLogBtn" disabled title="Clear the run log">clear log</button>
         </div>
-        <div class="console" id="console"><span class="placeholder">Launch output appears here. The tool opens its own window on your desktop — nothing runs on its own, you press the button.</span></div>
+        <div class="console" id="console"><span class="placeholder">Launch output appears here. The tool opens its own window on your desktop — nothing runs on its own, you press the button. Or hit <b>🔎 self-test</b> and TheDawg will run it, look at the window, and find what's broken for you.</span></div>
+        <div class="shotwrap" id="shotWrap" style="display:none">
+          <div class="shot-h">
+            <span>self-test screenshot</span>
+            <span class="verdict" id="shotVerdict"></span>
+            <span class="x" id="shotClose" title="hide">✕</span>
+          </div>
+          <img id="shotImg" alt="screenshot of the tool's window">
+        </div>
       </div>
     </div>
   </div>
@@ -856,6 +880,7 @@ document.addEventListener("keydown", e=>{
 /* ============================ app state ============================ */
 let state = {
   messages: [], code: null, name: "tool", version: "testing",
+  ver: "1.0.0", named: false, title: "Tool", _semverInit: false,
   busy: false, pendingRelease: false, intakeDone: false, intakeAnswers: {},
   prevCode: null, sessionId: null, attachments: [], lastError: null, hasRun: false,
   ghUser: "", ghHolder: "", _panelTab: "sessions", _intakeQs: null, _followupEl: null,
@@ -899,6 +924,7 @@ function loadCodeFile(fname, text){
     {role:"assistant", content:"Loaded your file into the workspace. Tell me what to debug, fix, improve, or turn into a GUI — or just hit Run."}
   ];
   state.name=(fname.replace(/\.[^.]+$/,"")||"loaded").replace(/[^A-Za-z0-9_\-]/g,"_");
+  state.named=false; state._semverInit=false; state.title=state.name;
   state.intakeDone=true; state.prevCode=null; state.sessionId=null;
   $("#thread").innerHTML="";
   addMsg("you", `Loaded: ${fname} (${lines} lines)`);
@@ -1193,7 +1219,7 @@ async function converse(){
   }
   let flag=null;
   if(hadCode){
-    flag=`${state.name}.py updated · ${state.version} version`;
+    flag=`${state.name}.py v${String(state.ver).replace(/^v/,"")} · ${state.version} version`;
     const at=res.autotest;
     if(at && at.ran){
       const rounds=(at.rounds||[]).length;
@@ -1245,12 +1271,21 @@ document.addEventListener("click", e=>{
 });
 
 /* ============================ code pane ============================ */
-function loadCode(code){
-  state.prevCode=state.code; state.code=code; guessName(code);
-  $("#codeFile").textContent=state.name+".py";
-  $("#fileName").textContent=state.name+".py";
+function loadCode(code, opts){
+  opts = opts || {};
+  state.prevCode=state.code; state.code=code;
+  // NAME/TITLE: derive from the tool's own window title — until the user locks a name.
+  if(!opts.restore && !state.named){
+    const d=deriveName(code);
+    if(d){ state.title=d.title; state.name=d.slug; }
+  }
+  // SEMVER: 1.0.0 the first time, +patch on every genuine change, never on a restore.
+  if(opts.restore){ state._semverInit=true; }          // caller already set state.ver
+  else if(!state._semverInit){ state.ver="1.0.0"; state._semverInit=true; }
+  else if(opts.bump!==false){ state.ver=bumpPatch(state.ver); }
+  paintNames();
   renderCode(code);
-  ["copyBtn","saveBtn","runBtn","releaseBtn","fixLogBtn","polishBtn","dlLogBtn","clearLogBtn",
+  ["copyBtn","saveBtn","runBtn","releaseBtn","probeBtn","fixLogBtn","polishBtn","dlLogBtn","clearLogBtn",
    "editBtn","depsBtn","libSaveBtn","reviewBtn","buildBtn"].forEach(id=>$("#"+id).disabled=false);
   $("#diffBtn").disabled=!state.prevCode;
   autosaveSession();
@@ -1264,15 +1299,49 @@ function autosaveSession(){
     try{
       const r=await fetch("/api/session/save",{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({id:state.sessionId, name:state.name, code:state.code, messages:state.messages,
-          version:state.version, args:$("#args").value.trim()})}).then(r=>r.json());
+          version:state.version, args:$("#args").value.trim(),
+          ver:state.ver, named:state.named, title:state.title})}).then(r=>r.json());
       if(r.id) state.sessionId=r.id;
     }catch(e){}
   }, 800);
 }
-function guessName(code){
-  let m=code.match(/add_parser\(['"]([a-z0-9_\-]+)/i) || code.match(/prog=['"]([a-z0-9_\-]+)/i) || code.match(/def\s+([a-z0-9_]{3,})\s*\(/i);
-  if(m) state.name=m[1].replace(/[^a-z0-9_\-]/gi,"_");
+function slugify(s){
+  return (s||"").trim().toLowerCase()
+    .replace(/['"]/g,"").replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"").slice(0,40) || "tool";
 }
+const GENERIC_TITLES=new Set(["app","application","tool","window","main","main window","root","tk",
+  "untitled","my app","my application","window title","title","program","gui","test","example",
+  "demo","frame","mainwindow","qwidget","form","dialog","python","hello","hello world"]);
+function deriveName(code){
+  const pats=[
+    /\.title\(\s*['"]([^'"]{2,60})['"]/,                    // tk root.title("X")
+    /\.wm_title\(\s*['"]([^'"]{2,60})['"]/,                 // tk wm_title
+    /setWindowTitle\(\s*['"]([^'"]{2,60})['"]/,             // Qt
+    /\.SetTitle\(\s*['"]([^'"]{2,60})['"]/,                 // wx
+    /wx\.Frame\([^)]*?title\s*=\s*['"]([^'"]{2,60})['"]/,   // wx.Frame(..., title="X")
+    /\b(?:APP_NAME|APP_TITLE|WINDOW_TITLE|TITLE|PROGRAM_NAME|APPNAME)\s*=\s*['"]([^'"]{2,60})['"]/,
+  ];
+  for(const re of pats){
+    const m=code.match(re);
+    if(m){ const t=m[1].trim();
+      if(t && !GENERIC_TITLES.has(t.toLowerCase())) return {title:t, slug:slugify(t)}; }
+  }
+  // fallback: argparse prog / first real function name
+  const f=code.match(/add_parser\(['"]([a-z0-9_\-]+)/i) || code.match(/prog=['"]([a-z0-9_\-]+)/i)
+        || code.match(/def\s+([a-z0-9_]{3,})\s*\(/i);
+  if(f){ const s=slugify(f[1]); if(!GENERIC_TITLES.has(s)) return {title:f[1], slug:s}; }
+  return null;
+}
+function parseSemver(v){ const m=/^v?(\d+)\.(\d+)\.(\d+)$/.exec((v||"").trim()); return m?[+m[1],+m[2],+m[3]]:[1,0,0]; }
+function bumpPatch(v){ const a=parseSemver(v); a[2]+=1; return a.join("."); }
+function paintNames(){
+  const fn=state.name+".py";
+  const cf=$("#codeFile"); if(cf) cf.textContent=fn;
+  const fnEl=$("#fileName"); if(fnEl) fnEl.textContent=fn;
+  const chip=$("#toolChip"); if(chip) chip.classList.toggle("locked", !!state.named);
+  paintVer();
+}
+function paintVer(){ const b=$("#semverBadge"); if(b) b.textContent="v"+String(state.ver||"1.0.0").replace(/^v/,""); }
 function renderCode(code){
   const body=$("#codeBody"); body.innerHTML="";
   const pre=document.createElement("pre"); pre.className="code";
@@ -1283,6 +1352,26 @@ function renderCode(code){
   body.appendChild(pre);
 }
 function setVersion(v){ state.version=v; const b=$("#verBadge"); b.className="badge "+v; b.textContent=v; updateSteps(); }
+
+/* click the tool chip to lock a name (only the version moves afterwards) */
+$("#toolChip").onclick=()=>{
+  const v=prompt(
+    "Name this tool. The name then LOCKS — only the version (v1.0.0 → v1.0.1 …) changes after.\n"+
+    "Leave blank to let TheDawg keep naming it from the tool's window title.",
+    state.named ? state.name : (state.title||""));
+  if(v===null) return;
+  const t=v.trim();
+  if(!t){
+    state.named=false;
+    if(state.code){ const d=deriveName(state.code); if(d){ state.title=d.title; state.name=d.slug; } }
+    paintNames(); autosaveSession();
+    toast("Name unlocked — TheDawg names it from the window title again");
+    return;
+  }
+  state.named=true; state.title=t; state.name=slugify(t);
+  paintNames(); autosaveSession();
+  toast(`Locked name: ${state.name}.py — only the version moves now`);
+};
 
 $("#copyBtn").onclick=()=>{ navigator.clipboard.writeText(state.code||""); toast("Copied to clipboard"); };
 $("#saveBtn").onclick=save;
@@ -1383,7 +1472,7 @@ $("#libSaveBtn").onclick=async ()=>{
   if(!state.code){ toast("Nothing to save yet", true); return; }
   let r;
   try{ r=await fetch("/api/library/save",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({name:state.name, code:state.code, messages:state.messages, version:state.version, args:$("#args").value.trim(), sessionId:state.sessionId})}).then(r=>r.json()); }
+    body:JSON.stringify({name:state.name, code:state.code, messages:state.messages, version:state.version, args:$("#args").value.trim(), sessionId:state.sessionId, ver:state.ver, named:state.named, title:state.title})}).then(r=>r.json()); }
   catch(e){ toast("Couldn't reach the local server", true); return; }
   if(r && r.error){ toast("⚠ "+r.error, true); return; }
   toast(`Saved "${state.name}" to library — its state is banked`);
@@ -1425,12 +1514,13 @@ async function resumeSession(id){
   const s=r.session;
   state.messages=s.messages||[]; state.name=s.name||s.id; state.sessionId=s.id;
   state.intakeDone=true; state.prevCode=null; state.attachments=[]; state.hasRun=false; renderAttachments();
+  state.ver=s.ver||"1.0.0"; state.named=!!s.named; state.title=s.title||s.name||s.id; state._semverInit=true;
   $("#thread").innerHTML="";
   (s.messages||[]).forEach(m=>{
     if(m.role==="user") addMsg("you", m.content.replace(/```[\s\S]*?```/g,"[code]"));
     else if(m.role==="assistant"){ const {prose}=splitReply(m.content); if(prose) addMsg("smith", prose); }
   });
-  if(s.code){ loadCode(s.code); setVersion(s.version||"testing"); }
+  if(s.code){ loadCode(s.code, {restore:true}); setVersion(s.version||"testing"); }
   $("#args").value=s.args||"";
   $("#libPanel").classList.remove("on");
   toast(`Resumed "${s.name}"`);
@@ -1443,7 +1533,7 @@ async function renderLibrary(){
   $("#libBody").innerHTML=tools.map(t=>`
     <div class="lib-item" data-id="${t.id}">
       <div class="nm">${escapeHtml(t.name)}${t.toolkit?` <span class="tk">${escapeHtml(t.toolkit)}</span>`:""}</div>
-      <div class="meta">${t.lines} lines · ${escapeHtml(t.version||"testing")} · saved ${escapeHtml(t.saved||"")}</div>
+      <div class="meta">${t.lines} lines · v${escapeHtml(String(t.ver||"1.0.0").replace(/^v/,""))} · ${escapeHtml(t.version||"testing")} · saved ${escapeHtml(t.saved||"")}</div>
       <div class="row"><span class="open">open ▸</span><span class="del" data-id="${t.id}">delete</span></div>
     </div>`).join("");
   $("#libBody").querySelectorAll(".lib-item").forEach(el=>{
@@ -1462,13 +1552,14 @@ async function loadFromLibrary(id){
   const tool=r.tool;
   state.messages=tool.messages||[]; state.name=tool.name||tool.id; state.intakeDone=true; state.prevCode=null;
   state.sessionId=null; state.attachments=[]; state.hasRun=false; renderAttachments();
+  state.ver=tool.ver||"1.0.0"; state.named=!!tool.named; state.title=tool.title||tool.name||tool.id; state._semverInit=true;
   $("#thread").innerHTML="";
   (tool.messages||[]).forEach(m=>{
     if(m.role==="user") addMsg("you", m.content.replace(/```[\s\S]*?```/g,"[code]"));
     else if(m.role==="assistant"){ const {prose}=splitReply(m.content); if(prose) addMsg("smith", prose); }
   });
-  addMsg("smith", `Loaded "${tool.name}" from the library at its saved ${tool.version||"testing"} state — conversation, code and args restored. Keep iterating where you left off.`);
-  loadCode(tool.code); setVersion(tool.version||"testing");
+  addMsg("smith", `Loaded "${tool.name}" from the library at its saved ${tool.version||"testing"} state (v${String(tool.ver||"1.0.0").replace(/^v/,"")}) — conversation, code and args restored. Keep iterating where you left off.`);
+  loadCode(tool.code, {restore:true}); setVersion(tool.version||"testing");
   $("#args").value=tool.args||"";
   $("#libPanel").classList.remove("on");
 }
@@ -1607,6 +1698,41 @@ async function run(confirmed){
 $("#dangerCancel").onclick=()=>closeScrim("dangerScrim");
 $("#dangerConfirm").onclick=()=>{ closeScrim("dangerScrim"); run(true); };
 
+/* ============================ self-test (runtime probe) ============================ */
+$("#probeBtn").onclick=async ()=>{
+  if(!state.code || state.busy) return;
+  const con=$("#console");
+  con.innerHTML=`<span class="meta">$ self-test — opening the window on a hidden display and looking at it…</span>\n<span class="placeholder">running…</span>`;
+  let res;
+  try{ res=await fetch("/api/probe",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({code:state.code, name:state.name})}).then(r=>r.json()); }
+  catch(e){ con.innerHTML=`<span class="bad">Couldn't reach the local TheDawg server.</span>`; return; }
+  renderProbe(res);
+};
+function renderProbe(res){
+  const con=$("#console");
+  const cls = res.ok ? "ok" : (res.ran ? "bad" : "meta");
+  let head;
+  if(!res.ran) head = "self-test couldn't run — "+(res.kind||"unknown")+" (see note below)";
+  else if(res.crashed_on_interact) head = "✗ the window opens but CRASHES on interaction";
+  else if(res.alive===false) head = "✗ the tool CRASHES on startup — window doesn't stay open";
+  else if(res.analysis && res.analysis.blank) head = "⚠ the window opens but renders BLANK";
+  else head = "✓ the window opens, stays up and renders real content";
+  con.innerHTML = `<span class="${cls}">${esc(head)}</span>\n\n<span class="out">${esc(res.report||"")}</span>`;
+  con.scrollTop=0;
+  const wrap=$("#shotWrap"), img=$("#shotImg"), verdict=$("#shotVerdict");
+  if(res.shot){
+    img.src="/api/shot.png?t="+Date.now();
+    const blank = res.analysis && res.analysis.blank;
+    verdict.textContent = blank ? "blank" : "renders content";
+    verdict.className = "verdict " + (blank ? "bad" : "good");
+    wrap.style.display="block";
+  } else { wrap.style.display="none"; }
+  if(res.report) state.lastError = res.report;   // so "send log to AI" / dbl-click has it
+  state.hasRun=true; updateSteps();
+}
+$("#shotClose").onclick=()=>{ $("#shotWrap").style.display="none"; };
+
 /* ============================ send log to AI & fix ============================ */
 $("#fixLogBtn").onclick=async ()=>{
   if(!state.code || state.busy) return;
@@ -1619,32 +1745,55 @@ $("#fixLogBtn").onclick=async ()=>{
 };
 
 /* ============================ auto-polish loop ============================ */
-let polishing=false;
+let polishing=false, polishAbort=null;
+function endPolish(msg){
+  polishing=false;
+  if(polishAbort){ try{ polishAbort.abort(); }catch(e){} polishAbort=null; }
+  const btn=$("#polishBtn"); btn.classList.remove("running"); btn.textContent="✦ auto-polish loop";
+  if(msg!==undefined) $("#polishStatus").textContent=msg;
+  setTimeout(()=>{ if(!polishing) $("#polishStatus").textContent=""; }, 4500);
+}
 $("#polishBtn").onclick=async ()=>{
-  if(polishing){ polishing=false; return; }
+  if(polishing){ endPolish("stopped"); return; }     // STOP: takes effect immediately
   if(!state.code) return;
   polishing=true;
   const btn=$("#polishBtn"); btn.classList.add("running"); btn.textContent="■ stop polishing";
   let round=0;
   while(polishing){
     round++;
-    $("#polishStatus").textContent=`polishing — round ${round}…`;
+    $("#polishStatus").textContent=`testing & polishing — round ${round}…`;
+    // 1) ask the model to test+improve (cancellable)
+    polishAbort=new AbortController();
     let res;
-    try{ res=await fetch("/api/polish",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:state.code, messages:state.messages, provider:$("#providerPick").value})}).then(r=>r.json()); }
-    catch(e){ res={error:"Couldn't reach the local server."}; }
-    if(res.error){ addMsg("smith","⚠ "+res.error); break; }
+    try{
+      res=await fetch("/api/polish",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({code:state.code, messages:state.messages, provider:$("#providerPick").value}),
+        signal:polishAbort.signal}).then(r=>r.json());
+    }catch(e){
+      if(!polishing) return;                          // aborted by Stop → exit silently
+      addMsg("smith","⚠ Couldn't reach the local server."); return endPolish("stopped — connection lost");
+    }
+    if(!polishing) return;                            // Stop pressed during the request
+    if(res.error){ addMsg("smith","⚠ "+res.error); return endPolish("stopped — "+res.error); }
     const {prose, code}=splitReply(res.reply);
-    if(!code){ $("#polishStatus").textContent="stopped — model returned no code"; break; }
+    if(!code){ return endPolish("stopped — model returned no code"); }
     loadCode(code); setVersion("testing");
     state.messages.push({role:"assistant", content:res.reply});
-    addMsg("smith", prose||"Polished a round.", `${state.name}.py · polish round ${round}`);
-    await run(true);
-    if(round>=6){ $("#polishStatus").textContent="stopped — hit 6-round safety cap"; break; }
+    addMsg("smith", prose||"Polished a round.", `${state.name}.py v${String(state.ver).replace(/^v/,"")} · polish round ${round}`);
+    if(!polishing) return;
+    // 2) headless self-test of the new code (no window pops on your desktop), cancellable
+    $("#polishStatus").textContent=`round ${round}: self-testing the result…`;
+    polishAbort=new AbortController();
+    let pr=null;
+    try{
+      pr=await fetch("/api/probe",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({code:state.code, name:state.name}), signal:polishAbort.signal}).then(r=>r.json());
+    }catch(e){ if(!polishing) return; }
+    if(!polishing) return;
+    if(pr) renderProbe(pr);
+    if(round>=8){ return endPolish("stopped — hit 8-round safety cap"); }
   }
-  polishing=false;
-  btn.classList.remove("running"); btn.textContent="✦ auto-polish loop";
-  if(!$("#polishStatus").textContent.startsWith("stopped")) $("#polishStatus").textContent="done";
-  setTimeout(()=>$("#polishStatus").textContent="", 4000);
+  endPolish("done");
 };
 
 /* ============================ log download / clear ============================ */
@@ -1658,7 +1807,7 @@ function applyModelResult(res, introIfProse){
   $("#modelName").textContent=res.model||$("#modelName").textContent; reflectKey(true);
   const {prose, code}=splitReply(res.reply);
   let flag=null;
-  if(code){ loadCode(code); setVersion("testing"); flag=`${state.name}.py updated`; const at=res.autotest; if(at && at.ran) flag+=at.passed?"  ·  ✓ auto-tested":"  ·  ⚠ check still failing"; }
+  if(code){ loadCode(code); setVersion("testing"); flag=`${state.name}.py v${String(state.ver).replace(/^v/,"")}`; const at=res.autotest; if(at && at.ran) flag+=at.passed?"  ·  ✓ auto-tested":"  ·  ⚠ check still failing"; }
   addMsg("smith", prose||introIfProse||"Done.", flag);
   state.messages.push({role:"assistant", content:res.reply});
 }
@@ -1738,6 +1887,9 @@ $("#scaleReset").onclick=()=>{ applyScale(1); toast("Interface size reset to 100
 $("#newBtn").onclick=()=>{
   state.messages=[]; state.code=null; state.name="tool"; state.pendingRelease=false; state.lastError=null;
   state.intakeDone=false; state.intakeAnswers={}; state.attachments=[]; state.hasRun=false; renderAttachments();
+  state.ver="1.0.0"; state.named=false; state.title="Tool"; state._semverInit=false;
+  $("#toolChip").classList.remove("locked"); $("#semverBadge").textContent="v1.0.0";
+  $("#shotWrap").style.display="none";
   setVersion("testing");
   $("#thread").innerHTML=""; $("#codeFile").textContent="no draft yet"; $("#fileName").textContent="untitled.py";
   $("#codeBody").innerHTML=`<div class="empty"><img src="/assets/icon.svg" alt=""><h2>Nothing on the anvil yet</h2><p>Describe a GUI tool on the left to begin — we'll agree on it, then I'll forge a testing version you can launch right here.</p>`

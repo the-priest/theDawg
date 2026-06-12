@@ -52,7 +52,7 @@ import urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --------------------------------------------------------------------------
@@ -309,8 +309,11 @@ GUI ENGINEERING STANDARDS:
   ONE line BEFORE the code block (always `pip install ...` — TheDawg installs into a managed venv).
 
 RUNTIME CORRECTNESS — the bugs that slip past a parse/import check and only bite when the window
-actually opens. TheDawg pre-checks your code by IMPORTING it, not by opening the window, so these
-are exactly the mistakes that reach the user. Trace each one before you output:
+actually opens. TheDawg now TESTS your tool for real: it imports it to pre-check structure, AND it
+opens the window on a headless display, screenshots it, checks the window isn't blank, and sends it
+synthetic keypresses and a click to surface crash-on-interaction. Whatever it observes — a startup
+crash, a window that renders BLANK, a callback that dies on click — is fed straight back to you to
+fix. So these are not theoretical: get them right the first time. Trace each one before you output:
 - WIDGET REFERENCES THAT OUTLIVE THEIR SCOPE: any widget a callback or thread touches later must be
   stored on `self` (or captured in a closure that stays alive) — not a bare local that is garbage
   collected the moment the constructor returns. In Tkinter specifically, an image (`PhotoImage`,
@@ -685,7 +688,8 @@ LIBRARY_DIR = str(app_data_dir() / "library")
 def _safe_id(name):
     return re.sub(r"[^A-Za-z0-9_\-]", "_", (name or "tool")).strip("_") or "tool"
 
-def library_save(name, code, messages, version="testing", args="", sid=None):
+def library_save(name, code, messages, version="testing", args="", sid=None,
+                 ver="1.0.0", named=False, title=""):
     """Snapshot a tool to the library at its CURRENT state: its code, the full build
     conversation, the version badge, and the test args. Reopening it restores all of
     that so you continue exactly where you left off — like saving a chat."""
@@ -694,6 +698,7 @@ def library_save(name, code, messages, version="testing", args="", sid=None):
     rec = {"id": tid, "name": name or tid, "code": code,
            "messages": messages or [], "version": version or "testing",
            "args": args or "", "toolkit": (detect_toolkit(code or "") or {}).get("label"),
+           "ver": ver or "1.0.0", "named": bool(named), "title": title or (name or tid),
            "from_session": sid, "saved": time.strftime("%Y-%m-%d %H:%M")}
     with open(os.path.join(LIBRARY_DIR, tid + ".json"), "w") as f:
         json.dump(rec, f)
@@ -712,6 +717,7 @@ def library_list():
             tools.append({"id": r.get("id"), "name": r.get("name"),
                           "saved": r.get("saved"), "toolkit": r.get("toolkit"),
                           "version": r.get("version", "testing"),
+                          "ver": r.get("ver", "1.0.0"), "title": r.get("title", r.get("name")),
                           "lines": len((r.get("code") or "").splitlines())})
         except Exception:
             continue
@@ -737,13 +743,15 @@ def library_delete(tid):
 # --------------------------------------------------------------------------
 SESSION_DIR = str(app_data_dir() / "sessions")
 
-def session_save(sid, name, code, messages, version="testing", args=""):
+def session_save(sid, name, code, messages, version="testing", args="",
+                 ver="1.0.0", named=False, title=""):
     """Auto-save the live conversation+code for a tool in progress (its full state)."""
     os.makedirs(SESSION_DIR, exist_ok=True)
     sid = sid or time.strftime("s%Y%m%d-%H%M%S")
     rec = {"id": sid, "name": name or "untitled", "code": code or "",
            "messages": messages or [], "version": version or "testing", "args": args or "",
            "toolkit": (detect_toolkit(code or "") or {}).get("label"),
+           "ver": ver or "1.0.0", "named": bool(named), "title": title or (name or "untitled"),
            "updated": time.strftime("%Y-%m-%d %H:%M")}
     with open(os.path.join(SESSION_DIR, _safe_id(sid) + ".json"), "w") as f:
         json.dump(rec, f)
@@ -1809,6 +1817,353 @@ def smoke_test(code):
         try: os.unlink(path)
         except Exception: pass
 
+# ==========================================================================
+# RUNTIME PROBE  -- actually OPEN the GUI, look at it, and report back
+# --------------------------------------------------------------------------
+# smoke_test() only proves the code parses and imports. It never opens the
+# window, so it's blind to the failures that matter most: a window that opens
+# then crashes, a window that renders BLANK, a callback that dies on click.
+# The probe fills that gap. It opens the tool on a *headless* virtual display
+# (Xvfb) so it never disturbs your desktop, waits for it to settle, takes a
+# screenshot, optionally pokes it (keyboard + a click), and turns all of that
+# into a precise text report the model can read — so "it can see what's wrong"
+# without you typing a word. Linux-only; degrades gracefully everywhere else.
+PROBE_SETTLE = 2.4          # seconds to let the window come up before looking
+PROBE_INTERACT = True       # send a few synthetic events to catch click-crashes
+SHOT_PATH = os.path.join(tempfile.gettempdir(), "thedawg_lastshot.png")
+LAST_PROBE = {}             # most recent probe result (for /api/shot.png + fix/polish)
+
+def _which(*names):
+    for n in names:
+        p = shutil.which(n)
+        if p:
+            return p
+    return None
+
+def _free_display():
+    import random
+    for n in range(99, 130):
+        if not os.path.exists(f"/tmp/.X11-unix/X{n}"):
+            return n
+    return random.randint(300, 900)
+
+def _probe_win_geometry(xdo, env, wid):
+    try:
+        out = subprocess.run([xdo, "getwindowgeometry", "--shell", wid], env=env,
+                             capture_output=True, timeout=5).stdout.decode()
+        g = dict(re.findall(r"(\w+)=(-?\d+)", out))
+        return (int(g["X"]), int(g["Y"]), int(g["WIDTH"]), int(g["HEIGHT"]))
+    except Exception:
+        return None
+
+def _largest_window_geom(display):
+    """Geometry of the biggest visible named window (the tool itself), or None."""
+    xdo = _which("xdotool")
+    if not xdo:
+        return None
+    env = dict(os.environ); env["DISPLAY"] = display
+    try:
+        ids = subprocess.run([xdo, "search", "--onlyvisible", "--name", "."], env=env,
+                             capture_output=True, timeout=5).stdout.decode().split()
+    except Exception:
+        return None
+    best, area = None, 256
+    for w in ids:
+        g = _probe_win_geometry(xdo, env, w)
+        if g and g[2] * g[3] > area:
+            best, area = g, g[2] * g[3]
+    return best
+
+def _capture_screenshot(display, out_path):
+    """Best-effort whole-screen grab via whatever capture tool is installed."""
+    env = dict(os.environ); env["DISPLAY"] = display
+    attempts = []
+    for tool, cmd in (("import", ["import", "-window", "root", out_path]),
+                      ("maim", ["maim", out_path]),
+                      ("scrot", ["scrot", "-o", out_path]),
+                      ("spectacle", ["spectacle", "-b", "-n", "-o", out_path]),
+                      ("gnome-screenshot", ["gnome-screenshot", "-f", out_path])):
+        p = _which(tool)
+        if p:
+            c = list(cmd); c[0] = p
+            attempts.append(c)
+    for cmd in attempts:
+        try:
+            r = subprocess.run(cmd, env=env, capture_output=True, timeout=20)
+            if r.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 200:
+                return True
+        except Exception:
+            continue
+    xwd, conv = _which("xwd"), _which("convert", "magick")
+    if xwd and conv:
+        try:
+            p1 = subprocess.run([xwd, "-root", "-silent"], env=env, capture_output=True, timeout=20)
+            if p1.returncode == 0 and p1.stdout:
+                p2 = subprocess.run([conv, "xwd:-", out_path], input=p1.stdout,
+                                    capture_output=True, timeout=20)
+                if p2.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 200:
+                    return True
+        except Exception:
+            pass
+    return False
+
+def _crop_to_window(shot_path, geom):
+    """Trim the full grab down to just the tool window (cleaner shot + sharper
+    blank-detection). Best-effort: on any problem, leave the full grab as-is."""
+    if not geom:
+        return
+    try:
+        from PIL import Image
+        x, y, w, h = geom
+        x = max(0, x); y = max(0, y)
+        im = Image.open(shot_path).convert("RGB")
+        W, H = im.size
+        right = min(W, x + w); bottom = min(H, y + h)
+        if right - x < 8 or bottom - y < 8:
+            return
+        im.crop((x, y, right, bottom)).save(shot_path)
+    except Exception:
+        return
+
+def _analyze_screenshot(path):
+    """Describe what's on screen so a TEXT model can 'see' it: is it blank? what's
+    the dominant colour? how busy is it? Catches the classic 'window opens but
+    renders nothing' bug, with no vision model required."""
+    try:
+        from PIL import Image
+    except Exception:
+        return {"ok": False}
+    try:
+        im = Image.open(path).convert("RGB")
+    except Exception:
+        return {"ok": False}
+    import statistics
+    W, H = im.size
+    small = im.resize((64, 64))
+    colors = small.getcolors(64 * 64) or []
+    if not colors:
+        return {"ok": False}
+    total = sum(c for c, _ in colors) or 1
+    colors.sort(reverse=True)
+    dom_count, dom_rgb = colors[0]
+    dom_frac = dom_count / total
+    q = small.quantize(colors=64).convert("RGB")
+    distinct = len(q.getcolors(64 * 64) or [])
+    px = small.load(); lums = []
+    for yy in range(0, 64, 4):
+        for xx in range(0, 64, 4):
+            r, g, b = px[xx, yy]
+            lums.append(0.299 * r + 0.587 * g + 0.114 * b)
+    spread = statistics.pstdev(lums) if len(lums) > 1 else 0.0
+    blank = dom_frac >= 0.985 and distinct <= 3 and spread < 6.0
+    return {"ok": True, "w": W, "h": H, "dominant": "#%02x%02x%02x" % dom_rgb,
+            "dominant_frac": round(dom_frac, 3), "distinct": distinct,
+            "spread": round(spread, 1), "blank": blank}
+
+def _drive_ui(display):
+    """Best-effort: focus the tool window and poke it (keyboard + a click at the
+    window's true centre) to surface 'crashes when you interact' bugs. Never raises."""
+    xdo = _which("xdotool")
+    if not xdo:
+        return []
+    env = dict(os.environ); env["DISPLAY"] = display
+    done = []
+    try:
+        ids = subprocess.run([xdo, "search", "--onlyvisible", "--name", "."], env=env,
+                             capture_output=True, timeout=5).stdout.decode().split()
+    except Exception:
+        ids = []
+    wid, area = None, -1
+    for w in ids:
+        g = _probe_win_geometry(xdo, env, w)
+        if g and g[2] * g[3] > area:
+            wid, area = w, g[2] * g[3]
+    wid = wid or (ids[0] if ids else None)
+    if wid:
+        for c in (["windowfocus", "--sync", wid], ["windowactivate", "--sync", wid],
+                  ["windowraise", wid]):
+            try:
+                subprocess.run([xdo] + c, env=env, capture_output=True, timeout=5)
+            except Exception:
+                pass
+    for keys in (["key", "--clearmodifiers", "Tab"], ["key", "--clearmodifiers", "Tab"],
+                 ["key", "--clearmodifiers", "space"], ["key", "--clearmodifiers", "Return"]):
+        try:
+            subprocess.run([xdo] + keys, env=env, capture_output=True, timeout=5)
+            done.append(" ".join(keys)); time.sleep(0.15)
+        except Exception:
+            break
+    g = _probe_win_geometry(xdo, env, wid) if wid else None
+    cx, cy = (g[0] + g[2] // 2, g[1] + g[3] // 2) if g else (640, 450)
+    for c in (["mousemove", "--sync", str(cx), str(cy)], ["click", "1"], ["click", "1"]):
+        try:
+            subprocess.run([xdo] + c, env=env, capture_output=True, timeout=5)
+            done.append(" ".join(c)); time.sleep(0.2)
+        except Exception:
+            break
+    return done
+
+def probe_run(code, name="tool", settle=None, interact=None):
+    """Open the GUI on a headless virtual display, watch it, screenshot it, and
+    report what happened. Stores the result in LAST_PROBE and the image at SHOT_PATH.
+    Returns a dict with a ready-to-read 'report' string."""
+    if settle is None:
+        settle = PROBE_SETTLE
+    if interact is None:
+        interact = PROBE_INTERACT
+    tk = detect_toolkit(code)
+    if not IS_LINUX:
+        res = {"ran": False, "shot": False, "kind": "not-linux",
+               "report": "The runtime probe (open + screenshot the window) is Linux-only. "
+                         "On this OS use \u25b6 launch to run the tool yourself."}
+        LAST_PROBE.clear(); LAST_PROBE.update(res); return res
+    if not tk:
+        res = {"ran": False, "shot": False, "kind": "not-gui",
+               "report": "This isn't a windowed GUI tool (no GUI toolkit imported), so there's "
+                         "no window to screenshot. Use \u25b6 launch to run it and read its output."}
+        LAST_PROBE.clear(); LAST_PROBE.update(res); return res
+
+    interp = run_python(code)
+    try:
+        if os.path.exists(SHOT_PATH):
+            os.unlink(SHOT_PATH)
+    except Exception:
+        pass
+    fd, path = tempfile.mkstemp(prefix="thedawg_probe_", suffix=".py")
+    with os.fdopen(fd, "w") as f:
+        f.write(code)
+    errf = tempfile.NamedTemporaryFile(prefix="thedawg_probe_err_", suffix=".log", delete=False)
+
+    xvfb = _which("Xvfb"); xv = None; headless = False
+    display = os.environ.get("DISPLAY", "")
+    if xvfb:
+        n = _free_display(); display = f":{n}"
+        try:
+            xv = subprocess.Popen([xvfb, display, "-screen", "0", "1280x900x24", "-nolisten", "tcp"],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            headless = True; time.sleep(0.9)
+        except Exception:
+            xv = None; display = os.environ.get("DISPLAY", ""); headless = False
+    if not display:
+        for p in (path, errf.name):
+            try: os.unlink(p)
+            except Exception: pass
+        res = {"ran": False, "shot": False, "kind": "no-display",
+               "report": "No display is available and Xvfb isn't installed, so the window can't be "
+                         "opened to look at it. Install Xvfb for headless self-tests:\n"
+                         "  sudo apt install xvfb xdotool imagemagick\n"
+                         "Or use \u25b6 launch inside your desktop session."}
+        LAST_PROBE.clear(); LAST_PROBE.update(res); return res
+
+    env = dict(os.environ); env["DISPLAY"] = display
+    env["QT_QPA_PLATFORM"] = "xcb"   # force xcb so Qt tools run under Xvfb
+    t0 = time.time()
+    try:
+        proc = subprocess.Popen([interp, path], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=errf,
+                                start_new_session=True, env=env)
+    except Exception as e:
+        for p in (path, errf.name):
+            try: os.unlink(p)
+            except Exception: pass
+        if xv:
+            try: xv.terminate()
+            except Exception: pass
+        res = {"ran": False, "shot": False, "kind": "launch-fail",
+               "report": f"Couldn't launch the tool to probe it: {e}"}
+        LAST_PROBE.clear(); LAST_PROBE.update(res); return res
+
+    time.sleep(settle)
+    alive = proc.poll() is None
+    crashed_on_interact = False; interacted = []
+    shot_ok = False; analysis = None
+    if alive:
+        geom = _largest_window_geom(display)
+        shot_ok = _capture_screenshot(display, SHOT_PATH)
+        if shot_ok:
+            _crop_to_window(SHOT_PATH, geom)
+            analysis = _analyze_screenshot(SHOT_PATH)
+        if interact:
+            interacted = _drive_ui(display); time.sleep(0.7)
+            if proc.poll() is not None:
+                crashed_on_interact = True; alive = False
+            geom = _largest_window_geom(display) or geom
+            if _capture_screenshot(display, SHOT_PATH):
+                _crop_to_window(SHOT_PATH, geom)
+                shot_ok = True; analysis = _analyze_screenshot(SHOT_PATH)
+    rc = proc.poll()
+    secs = round(time.time() - t0, 2)
+    try:
+        errf.flush(); errf.close()
+        with open(errf.name, "rb") as ef:
+            err = ef.read().decode("utf-8", errors="replace")
+    except Exception:
+        err = ""
+    # always close the probe window + Xvfb
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        try: proc.wait(timeout=2)
+        except Exception: os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        try: proc.terminate()
+        except Exception: pass
+    if xv:
+        try: xv.terminate()
+        except Exception: pass
+    for p in (path, errf.name):
+        try: os.unlink(p)
+        except Exception: pass
+
+    res = {"ran": True, "shot": shot_ok, "alive": alive, "rc": rc, "secs": secs,
+           "headless": headless, "toolkit": tk.get("label") if tk else None,
+           "stderr": err.strip(), "analysis": analysis, "interacted": interacted,
+           "crashed_on_interact": crashed_on_interact}
+    res["report"] = render_probe_report(res)
+    res["ok"] = bool(alive and (not analysis or not analysis.get("blank")))
+    LAST_PROBE.clear(); LAST_PROBE.update(res)
+    return res
+
+def render_probe_report(p):
+    """Turn a probe result into a precise, model-readable account of what happened."""
+    if not p or not p.get("ran"):
+        return (p or {}).get("report", "Runtime probe didn't run.")
+    L = []
+    where = "a headless virtual display (Xvfb)" if p.get("headless") else "the live desktop"
+    L.append(f"RUNTIME PROBE — opened the {p.get('toolkit') or 'GUI'} window on {where} "
+             f"and watched it for {p.get('secs')}s:")
+    if p.get("alive"):
+        L.append("\u2022 The window opened and STAYED OPEN through startup (no startup crash).")
+    elif p.get("crashed_on_interact"):
+        L.append(f"\u2022 The window opened but CRASHED when interacted with (exited {p.get('rc')}). "
+                 f"A keypress/click kills it — the failing callback's traceback is below. Fix it.")
+    else:
+        L.append(f"\u2022 The window FAILED: the process exited with code {p.get('rc')} during or "
+                 f"right after startup. It does NOT stay open. Traceback below.")
+    a = p.get("analysis") or {}
+    if p.get("shot") and a.get("ok"):
+        if a.get("blank"):
+            L.append(f"\u2022 SCREENSHOT: a BLANK/UNIFORM window ({a.get('w')}x{a.get('h')}px) — "
+                     f"essentially one flat colour ({a.get('dominant')} covers "
+                     f"{int(a.get('dominant_frac',0)*100)}%). The window exists but NOTHING renders. "
+                     f"Usual causes: widgets never added to a layout / never packed or gridded; a "
+                     f"paint/draw routine that never runs; a zero or mis-set geometry; or an "
+                     f"exception swallowed inside a setup callback. Make the UI actually populate.")
+        else:
+            L.append(f"\u2022 SCREENSHOT: a populated window ({a.get('w')}x{a.get('h')}px, "
+                     f"{a.get('distinct')} distinct colours, dominant {a.get('dominant')} "
+                     f"~{int(a.get('dominant_frac',0)*100)}%) — it renders real content.")
+    elif p.get("alive") and not p.get("shot"):
+        L.append("\u2022 SCREENSHOT: none could be captured on this box (no screenshot tool found; "
+                 "install imagemagick/maim/scrot for a picture).")
+    if p.get("interacted"):
+        L.append(f"\u2022 Synthetic interaction sent: {', '.join(p['interacted'])}.")
+    if p.get("stderr"):
+        L.append("\n--- the tool's own stderr / traceback ---\n" + p["stderr"][-2500:])
+    if p.get("alive") and not (a.get("ok") and a.get("blank")) and not p.get("stderr"):
+        L.append("\u2022 Net: it launches clean and renders content. Looks healthy from here.")
+    return "\n".join(L)
+
+
 def _latest_code_in(convo):
     """Find the most recent code block in a conversation (the current tool)."""
     for m in reversed(convo):
@@ -2555,39 +2910,88 @@ def render_log(full=True):
     return "\n".join(lines)
 
 def fix_from_log(code, messages, provider_id=None):
-    """Send the current code + the whole session log to the model for a fix."""
-    if not SESSION_LOG:
-        return {"error": "No runs logged yet — run the tool at least once first."}
-    log_blob = render_log(full=False)
+    """Send the current code + the run log + the latest runtime probe (what the
+    window actually did and how it looked) to the model for a fix."""
+    probe_report = LAST_PROBE.get("report") if LAST_PROBE.get("ran") else ""
+    if not SESSION_LOG and not probe_report:
+        return {"error": "Nothing observed yet — press \u25b6 launch or \U0001f50e self-test first, "
+                         "then I'll have something to diagnose."}
+    log_blob = render_log(full=False) if SESSION_LOG else "(no manual runs logged)"
     convo = [m for m in messages if m.get("role") != "system"]
+    extra = ""
+    if probe_report:
+        extra = ("\n\n=== RUNTIME PROBE (TheDawg opened the window and looked at it) ===\n"
+                 + probe_report)
     convo = [{"role": "system", "content": SYSTEM_PROMPT}] + convo + [{
         "role": "user",
         "content": (
-            "Here is the current tool and the full log of how it behaved when I ran it. "
-            "Diagnose every problem you can see in the runs and return the FULL corrected "
-            "script. Briefly list what you fixed.\n\n"
+            "Here is the current tool plus everything TheDawg observed when it ran: the run "
+            "log, and (if present) a runtime probe that actually opened the window, watched "
+            "whether it stayed up, screenshotted it, and poked it. Diagnose every problem you "
+            "can see and return the FULL corrected script. Briefly list what you fixed.\n\n"
             f"=== CURRENT CODE ===\n```python\n{code}\n```\n\n"
-            f"=== RUN LOG ===\n{log_blob}"
+            f"=== RUN LOG ===\n{log_blob}" + extra
         )
     }]
     return chat_with_autotest(convo, provider_id)
 
 def polish_round(code, messages, provider_id=None):
-    """One iteration of the auto-polish loop: run a quick smoke, then ask the model
-    to make the tool more robust/polished, returning improved code."""
-    # smoke the current code so we can tell the model what's wrong right now
+    """One iteration of the auto-polish loop. Before asking the model to improve the
+    tool, TheDawg actually TESTS it: a static smoke test AND a runtime probe that
+    opens the window, screenshots it, checks it isn't blank, and pokes it to surface
+    click-crashes. Any real failure observed is handed to the model as the #1 thing
+    to fix — so polish hunts genuine bugs instead of just gold-plating."""
+    # 1) static smoke
     passed, report, _ = smoke_test(code)
-    state_note = "It passes a basic smoke test." if passed else f"It currently FAILS a check:\n{report}"
-    log_blob = render_log(full=False) if SESSION_LOG else "(no runs yet)"
+    # 2) runtime probe (opens the real window headlessly and looks at it)
+    probe = probe_run(code, name="tool")
+
+    problems = []
+    if probe.get("ran"):
+        if probe.get("crashed_on_interact"):
+            problems.append("CRITICAL: the window opens but CRASHES on interaction "
+                            "(a keypress/click kills it). Fix the failing callback — "
+                            "traceback is in the probe report.")
+        elif probe.get("alive") is False:
+            problems.append("CRITICAL: the tool CRASHES on startup — the window does not "
+                            "stay open. Fix the startup error (traceback in the probe report).")
+        a = probe.get("analysis") or {}
+        if probe.get("alive") and a.get("ok") and a.get("blank"):
+            problems.append("CRITICAL: the window opens but renders BLANK (nothing is drawn). "
+                            "Make the UI actually populate — pack/grid/add the widgets, run the "
+                            "paint routine, set a real geometry.")
+    if not passed:
+        problems.append("It fails a static check:\n" + report)
+
+    log_blob = render_log(full=False) if SESSION_LOG else "(no manual runs yet)"
+    probe_section = ""
+    if probe.get("ran"):
+        probe_section = ("\n\n=== RUNTIME PROBE (TheDawg opened the window and looked) ===\n"
+                         + probe.get("report", ""))
+
+    if problems:
+        directive = (
+            "TheDawg tested this tool and found real problems. FIX THESE FIRST, in order, "
+            "before anything else:\n\n- " + "\n- ".join(problems) +
+            "\n\nReturn the FULL corrected script. After fixing the above, you may make one "
+            "small additional robustness improvement, but the priority is making the tool "
+            "actually run and render correctly. One line on what you changed."
+        )
+    else:
+        directive = (
+            "TheDawg tested this tool: it passes the static smoke test and the runtime probe "
+            "(window opens, stays up, renders real content, survives interaction). Since it's "
+            "healthy, improve it by ONE meaningful increment — harden an edge case, improve "
+            "output clarity, or add the single most valuable missing feature — but keep it ONE "
+            "self-contained script and don't over-engineer. Return the FULL improved script and "
+            "one line on what you changed."
+        )
+
     convo = [{"role": "system", "content": SYSTEM_PROMPT}, {
         "role": "user",
-        "content": (
-            "Improve this tool by one meaningful increment: fix any bug, harden error "
-            "handling, improve output clarity, and add the single most valuable missing "
-            "feature — but keep it ONE self-contained script and don't over-engineer. "
-            "Return the FULL improved script and one line on what you changed.\n\n"
-            f"{state_note}\n\n=== CODE ===\n```python\n{code}\n```\n\n=== RECENT RUNS ===\n{log_blob}"
-        )
+        "content": (directive +
+                    f"\n\n=== CODE ===\n```python\n{code}\n```\n\n"
+                    f"=== RECENT RUNS ===\n{log_blob}" + probe_section)
     }]
     return chat_with_autotest(convo, provider_id)
 
@@ -2699,6 +3103,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(blob)))
             self.end_headers()
             self.wfile.write(blob)
+        elif self.path.split("?")[0] == "/api/shot.png":
+            # latest runtime-probe screenshot (UI cache-busts with ?t=...)
+            if os.path.exists(SHOT_PATH):
+                self._file(SHOT_PATH, "image/png")
+            else:
+                self._send(404, {"error": "no screenshot yet"})
         else:
             self._send(404, {"error": "not found"})
 
@@ -2768,6 +3178,33 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, result)
         elif self.path == "/api/stop":
             self._send(200, stop_running(int(data.get("pid", 0) or 0)))
+        elif self.path == "/api/probe":
+            # TheDawg self-test: open the window headlessly, screenshot it, poke it,
+            # and report what it saw. Also logged so "send log to AI" has context.
+            p = probe_run(data.get("code", ""), data.get("name", "tool"))
+            if p.get("ran"):
+                if p.get("crashed_on_interact"):
+                    verdict = "self-test: window CRASHES on interaction"
+                elif p.get("alive") is False:
+                    verdict = "self-test: tool CRASHES on startup"
+                elif (p.get("analysis") or {}).get("blank"):
+                    verdict = "self-test: window opens but renders BLANK"
+                else:
+                    verdict = "self-test: window opens and renders content"
+            else:
+                verdict = "self-test: " + (p.get("kind") or "could not run")
+            log_run(data.get("name", "tool"), "(self-test)",
+                    {"ok": p.get("ok", False), "stdout": verdict,
+                     "stderr": p.get("stderr", "")})
+            self._send(200, {
+                "ran": p.get("ran", False), "shot": p.get("shot", False),
+                "alive": p.get("alive"), "rc": p.get("rc"), "secs": p.get("secs"),
+                "headless": p.get("headless"), "toolkit": p.get("toolkit"),
+                "analysis": p.get("analysis"), "interacted": p.get("interacted"),
+                "crashed_on_interact": p.get("crashed_on_interact"),
+                "ok": p.get("ok", False), "kind": p.get("kind"),
+                "report": p.get("report", ""),
+            })
         elif self.path == "/api/fixlog":
             convo = data.get("messages", [])
             self._send(200, fix_from_log(data.get("code", ""), convo, data.get("provider")))
@@ -2791,7 +3228,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, library_save(data.get("name", "tool"), data.get("code", ""),
                                          data.get("messages", []),
                                          data.get("version", "testing"),
-                                         data.get("args", ""), data.get("sessionId")))
+                                         data.get("args", ""), data.get("sessionId"),
+                                         data.get("ver", "1.0.0"),
+                                         bool(data.get("named", False)),
+                                         data.get("title", "")))
         elif self.path == "/api/library/load":
             self._send(200, library_load(data.get("id", "")))
         elif self.path == "/api/library/delete":
@@ -2799,7 +3239,10 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/session/save":
             self._send(200, session_save(data.get("id"), data.get("name", "untitled"),
                                          data.get("code", ""), data.get("messages", []),
-                                         data.get("version", "testing"), data.get("args", "")))
+                                         data.get("version", "testing"), data.get("args", ""),
+                                         data.get("ver", "1.0.0"),
+                                         bool(data.get("named", False)),
+                                         data.get("title", "")))
         elif self.path == "/api/session/load":
             self._send(200, session_load(data.get("id", "")))
         elif self.path == "/api/session/delete":

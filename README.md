@@ -28,6 +28,11 @@ to the latest version.
 
 Requires `python3` (3.8+). No root needed — everything lives under `$HOME`.
 
+The **🔎 self-test** feature (Linux) opens tool windows on a hidden display, so it uses
+`Xvfb`, `xdotool` and a screenshot tool. If any are missing TheDawg says so and tells you
+the package to install — on Kali/Debian: `sudo apt install xvfb xdotool imagemagick`.
+Everything else works without them.
+
 ---
 
 ## Set an API key
@@ -69,10 +74,15 @@ The flow is four steps, shown along the top of the workspace:
    best guess. You can skip the questions and just say "build it."
 2. **Test** — It forges a **testing version** and you launch it right there with
    **▶ launch**. The tool opens its own window on your desktop. Nothing runs on its
-   own — you press the button. Use **■ stop** to close it.
+   own — you press the button. Use **■ stop** to close it. Or hit **🔎 self-test** and
+   TheDawg runs the tool *itself* on a hidden display, screenshots the window, checks it
+   isn't blank, and pokes it with a click — then tells you what's wrong without you typing
+   a thing.
 3. **Iterate** — When something breaks, hit **⮐ send log to AI & fix** and it diagnoses
-   the run log and patches the code, or run the **✦ auto-polish loop** to launch → fix →
-   improve over several passes automatically.
+   the run log plus whatever the last self-test saw, then patches the code. Or run the
+   **✦ auto-polish loop**: each pass it tests the tool for real (opens the window, looks
+   at it, pokes it), feeds any crash / blank-window / click-crash straight back, and fixes
+   it — over several passes automatically, with no windows popping on your desktop.
 4. **Release** — When it's right, **◆ get ready for GitHub** polishes a clean release
    version and assembles a full repo, or **⬛ build** packs it into a single-file binary.
 
@@ -82,11 +92,20 @@ The flow is four steps, shown along the top of the workspace:
 
 **Building & iterating**
 - Conversational build with structured intake (multiple-choice spec questions up front).
-- **Testing** vs **release** versions, tracked with a badge.
+- **Names itself, then locks.** TheDawg names the tool from its own window title and tracks a
+  semantic version (`v1.0.0`) that bumps a patch on every change. Click the name chip to lock
+  a name of your own — after that the name is fixed and only the version keeps moving.
+- **Testing** vs **release** stage, tracked with a badge alongside the version.
 - **Auto-test**: after each build it silently runs the tool and fixes startup failures
   for up to 3 rounds before handing it back.
-- **⮐ Send log to AI & fix** — diagnose and repair straight from the run output.
-- **✦ Auto-polish loop** — automated launch → fix → improve cycles (safety-capped).
+- **🔎 Self-test** — TheDawg opens the tool's window on a headless display, screenshots it,
+  detects a blank/non-rendering window, and sends synthetic keys + a click to surface
+  crash-on-interaction — all reported in plain language (and the screenshot shown inline) so
+  it can see what's broken without you describing it.
+- **⮐ Send log to AI & fix** — diagnose and repair from the run output *and* the last self-test.
+- **✦ Auto-polish loop** — each round actually tests the result (open → look → poke) and
+  prioritises fixing real crashes and blank windows over gold-plating. Safety-capped, and
+  **stop** takes effect immediately.
 - Double-click a console error to send it straight to the model for a fix.
 
 **Understanding the code**
