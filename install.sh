@@ -32,6 +32,25 @@ TARBALL="https://codeload.github.com/$REPO/tar.gz/refs/heads/$BRANCH"
 
 OS="$(uname -s)"
 
+# ---- uninstall ----
+if [ "${1:-}" = "--uninstall" ] || [ "${1:-}" = "-u" ]; then
+  echo
+  echo "  removing TheDawg"
+  rm -rf "$SRC_DIR"
+  rm -f  "$LAUNCHER" "$APP_DIR/thedawg.desktop"
+  rm -f  "$ICON_DIR"/*/apps/thedawg.png "$ICON_DIR"/scalable/apps/thedawg.svg
+  rm -f  "$ICON_DIR"/*/apps/io.github.the_priest.TheDawg.png \
+         "$ICON_DIR"/scalable/apps/io.github.the_priest.TheDawg.svg
+  update-desktop-database "$APP_DIR" >/dev/null 2>&1 || true
+  gtk-update-icon-cache -f -t "$ICON_DIR" >/dev/null 2>&1 || true
+  echo "  gone. your config and saved tools are untouched:"
+  echo "    ~/.config/thedawg    (api keys, window state)"
+  echo "    ~/thedawg-tools      (tools you saved)"
+  echo "  delete those by hand if you want them gone too."
+  echo
+  exit 0
+fi
+
 # ---- pretty ----
 if [ -t 1 ]; then
   B="\033[1m"; R="\033[0m"; AMBER="\033[38;5;179m"; LIME="\033[38;5;149m"
@@ -45,22 +64,63 @@ warn() { printf "  ${RED}\xe2\x9a\xa0${R} %b\n" "$1"; }
 step() { printf "  ${GREY}\xe2\x80\xa6 %b${R}\n" "$1"; }
 
 printf "\n${AMBER}${B}  TheDawg installer${R}  ${GREY}\xe2\x80\x94 ${REPO}${R}\n"
-printf "  ${GREY}AI Python GUI toolsmith for Linux & macOS${R}\n\n"
+printf "  ${GREY}AI Python GUI toolsmith \xe2\x80\x94 native app on Linux${R}\n\n"
 
 # ---- python ----
 say "checking python"
 if ! command -v python3 >/dev/null 2>&1; then
   warn "python3 not found"
   case "$OS" in
-    Linux)  printf "    install it:  ${B}sudo apt install python3${R}  (Debian/Ubuntu/Mint/Kali)\n"
-            printf "    or:          ${B}sudo dnf install python3${R}    (Fedora)\n" ;;
+    Linux)  printf "    install it:  ${B}sudo pacman -S python${R}     (CachyOS/Arch/Manjaro)\n"
+            printf "    or:          ${B}sudo apt install python3${R}  (Debian/Ubuntu/Mint/Kali)\n"
+            printf "    or:          ${B}sudo dnf install python3${R}  (Fedora)\n" ;;
     Darwin) printf "    install it:  ${B}brew install python3${R}        (Homebrew)\n"
             printf "    or grab it from https://python.org\n" ;;
   esac
   exit 1
 fi
 PYV=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,8) else 1)'; then
+  warn "python3 $PYV is too old — TheDawg needs 3.8 or newer"
+  exit 1
+fi
 ok "python3 $PYV"
+
+# ---- distro ----
+# Which package manager this box uses decides two things: what we offer to install
+# for the native window, and (inside TheDawg) which install commands the model is
+# taught to put in the tools it writes.
+DISTRO_ID=""; DISTRO_PRETTY="$OS"; FAMILY="other"; PM=""
+if [ -r /etc/os-release ]; then
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  DISTRO_ID="${ID:-}"; DISTRO_PRETTY="${PRETTY_NAME:-${NAME:-Linux}}"
+  case " ${ID:-} ${ID_LIKE:-} " in
+    *cachyos*|*arch*|*manjaro*|*endeavouros*|*garuda*|*artix*) FAMILY="arch";   PM="sudo pacman -S --needed" ;;
+    *debian*|*ubuntu*|*kali*|*mint*|*pop*)                     FAMILY="debian"; PM="sudo apt install" ;;
+    *fedora*|*rhel*|*centos*|*nobara*)                         FAMILY="fedora"; PM="sudo dnf install" ;;
+    *suse*)                                                    FAMILY="suse";   PM="sudo zypper install" ;;
+  esac
+fi
+[ "$OS" = "Linux" ] && ok "$DISTRO_PRETTY  (${FAMILY} family)"
+[ "$DISTRO_ID" = "cachyos" ] && ok "CachyOS detected \xe2\x80\x94 native window path enabled"
+
+# packages for the native GTK4 window, per family
+case "$FAMILY" in
+  arch)   NATIVE_PKGS="python-gobject gtk4 libadwaita webkit2gtk-6.0" ;;
+  debian) NATIVE_PKGS="python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-webkit-6.0" ;;
+  fedora) NATIVE_PKGS="python3-gobject gtk4 libadwaita webkitgtk6.0" ;;
+  suse)   NATIVE_PKGS="python3-gobject gtk4 libadwaita webkit2gtk3-soup2" ;;
+  *)      NATIVE_PKGS="" ;;
+esac
+
+have_native() {
+  python3 - <<'PYCHK' >/dev/null 2>&1
+import gi
+gi.require_version("Gtk","4.0"); gi.require_version("Adw","1"); gi.require_version("WebKit","6.0")
+from gi.repository import Gtk, Adw, WebKit
+PYCHK
+}
 
 # ---- decide the source ----
 # A genuine local checkout means: this script exists as a real file on disk, sits
@@ -99,6 +159,7 @@ say "fetching source"
 if [ -n "$LOCAL_SRC" ]; then
   step "installing from local checkout: $LOCAL_SRC"
   cp -rf "$LOCAL_SRC/thedawg.py" "$LOCAL_SRC/ui" "$LOCAL_SRC/assets" "$SRC_DIR/"
+  [ -f "$LOCAL_SRC/shell.py" ] && cp -f "$LOCAL_SRC/shell.py" "$SRC_DIR/" || true
   mkdir -p "$SRC_DIR/sounds"
   [ -d "$LOCAL_SRC/sounds" ] && cp -rf "$LOCAL_SRC/sounds/." "$SRC_DIR/sounds/" || true
   [ -f "$LOCAL_SRC/README.md" ] && cp -f "$LOCAL_SRC/README.md" "$SRC_DIR/" || true
@@ -131,6 +192,31 @@ if [ ! -f "$SRC_DIR/thedawg.py" ]; then
 fi
 ok "source at $SRC_DIR"
 
+# ---- native window ----
+# TheDawg runs as a real GTK4 application rather than a browser in app mode. That
+# needs three system libraries; without them it still works, just in a browser
+# window. We never install anything without asking.
+if [ "$OS" = "Linux" ]; then
+  say "checking the native app window"
+  if have_native; then
+    ok "GTK4 + WebKitGTK present \xe2\x80\x94 TheDawg will open as a real app"
+  elif [ -n "$NATIVE_PKGS" ]; then
+    warn "GTK4 + WebKitGTK not installed"
+    printf "    without it TheDawg falls back to a browser window\n"
+    printf "    install:  ${B}${PM} ${NATIVE_PKGS}${R}\n"
+    if [ -t 1 ] && [ -r /dev/tty ]; then
+      printf "  ${GREY}install it now? [Y/n]${R} "
+      read -r ans </dev/tty || ans="n"
+      case "${ans:-Y}" in
+        [Yy]*|"") ${PM} ${NATIVE_PKGS} && ok "native window ready" || warn "install failed \xe2\x80\x94 run it yourself later" ;;
+        *) step "skipped \xe2\x80\x94 run the line above whenever you want it" ;;
+      esac
+    fi
+  else
+    step "unknown distro \xe2\x80\x94 install PyGObject, GTK4, libadwaita and WebKitGTK 6.0 for the native window"
+  fi
+fi
+
 # ---- CLI launcher ----
 say "writing launcher: $LAUNCHER"
 cat > "$LAUNCHER" <<EOSH
@@ -152,6 +238,9 @@ if [ "$OS" = "Linux" ]; then
   # Terminal=false because TheDawg backgrounds its own local server and opens a
   # browser app window — no terminal needed. StartupWMClass ties the window back
   # to this entry so the Dawg icon shows in the task switcher / overview.
+  # StartupWMClass must match what the window actually reports. The native GTK4
+  # shell sets its app_id to io.github.the_priest.TheDawg; the browser fallback
+  # sets --class=thedawg. Both entries are listed so the icon resolves either way.
   cat > "$APP_DIR/thedawg.desktop" <<EODESKTOP
 [Desktop Entry]
 Type=Application
@@ -161,11 +250,27 @@ Comment=Build Python GUI tools with AI
 Exec=$LAUNCHER
 Icon=thedawg
 Terminal=false
-Categories=Development;Utility;
+Categories=Development;Utility;IDE;
 StartupNotify=true
-StartupWMClass=thedawg
-Keywords=AI;Python;GUI;Tools;
+StartupWMClass=io.github.the_priest.TheDawg
+Keywords=AI;Python;GUI;Tools;builder;
+Actions=doctor;browser;
+
+[Desktop Action doctor]
+Name=Check this machine
+Exec=$LAUNCHER --doctor
+
+[Desktop Action browser]
+Name=Open in browser instead
+Exec=$LAUNCHER --browser
 EODESKTOP
+  # the GTK shell looks up its icon by app_id, so install it under that name too
+  for sz in 512 256 128; do
+    [ -f "$SRC_DIR/assets/icon-$sz.png" ] && \
+      cp -f "$SRC_DIR/assets/icon-$sz.png" "$ICON_DIR/${sz}x${sz}/apps/io.github.the_priest.TheDawg.png"
+  done
+  [ -f "$SRC_DIR/assets/icon.svg" ] && \
+    cp -f "$SRC_DIR/assets/icon.svg" "$ICON_DIR/scalable/apps/io.github.the_priest.TheDawg.svg"
   chmod 644 "$APP_DIR/thedawg.desktop"
   update-desktop-database "$APP_DIR" >/dev/null 2>&1 || true
   gtk-update-icon-cache -f -t "$ICON_DIR" >/dev/null 2>&1 || true
@@ -174,15 +279,37 @@ EODESKTOP
 fi
 
 # ---- PATH ----
+# The login shell decides which file to touch AND which syntax to write. This
+# matters on CachyOS, which ships fish on several editions — fish does not
+# understand `export PATH=...`, so the old bashrc-only path silently left
+# `thedawg` off the PATH there.
 case ":$PATH:" in
   *":$BIN_DIR:"*) ok "$BIN_DIR already on PATH" ;;
   *)
-    RC="$HOME/.bashrc"
-    [ -n "${ZSH_VERSION:-}" ] && RC="$HOME/.zshrc"
-    [ "$OS" = "Darwin" ] && [ ! -f "$RC" ] && RC="$HOME/.zshrc"
-    printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$RC"
-    warn "added $BIN_DIR to PATH in $RC"
-    printf "    open a new terminal, or run:  ${B}source $RC${R}\n"
+    LOGIN_SH="$(basename "${SHELL:-bash}")"
+    case "$LOGIN_SH" in
+      fish)
+        RC="$HOME/.config/fish/config.fish"
+        mkdir -p "$(dirname "$RC")"
+        if ! grep -qs 'thedawg-path' "$RC" 2>/dev/null; then
+          printf '\n# thedawg-path\nfish_add_path -g %s\n' "$BIN_DIR" >> "$RC"
+        fi
+        HINT="exec fish"
+        ;;
+      zsh)
+        RC="$HOME/.zshrc"
+        printf '\n# thedawg-path\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$RC"
+        HINT="source $RC"
+        ;;
+      *)
+        RC="$HOME/.bashrc"
+        [ "$OS" = "Darwin" ] && [ ! -f "$RC" ] && RC="$HOME/.bash_profile"
+        printf '\n# thedawg-path\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$RC"
+        HINT="source $RC"
+        ;;
+    esac
+    warn "added $BIN_DIR to PATH in $RC  (${LOGIN_SH})"
+    printf "    open a new terminal, or run:  ${B}${HINT}${R}\n"
   ;;
 esac
 
@@ -197,5 +324,6 @@ printf "  ${GREY}(add to ~/.bashrc / ~/.zshrc to persist, or set it inside TheDa
 # ---- done ----
 printf "\n${LIME}${B}  ready.${R}  launch with:\n"
 printf "  ${B}thedawg${R}\n"
+printf "  ${GREY}check what else this machine could use:${R}  ${B}thedawg --doctor${R}\n"
 [ "$OS" = "Linux" ] && printf "  ${GREY}or pick TheDawg from your app menu${R}\n"
 printf "\n"

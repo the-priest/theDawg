@@ -41,3 +41,9 @@ sounds/*.aac
 sounds/*.oga
 !sounds/README.md
 !sounds/.gitkeep
+
+# South Park artwork — personal use only, not ours to redistribute.
+# TheDawg falls back to the plain dark theme when these are absent.
+assets/town.webp
+assets/town.jpg
+assets/send.png

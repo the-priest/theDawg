@@ -52,7 +52,7 @@ import urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "1.3.0"
+__version__ = "2.0.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --------------------------------------------------------------------------
@@ -92,6 +92,145 @@ def detect_desktop_env():
         de = "other"
 
     return {"de": de, "form": "desktop", "session": sess, "raw": raw}
+
+# --------------------------------------------------------------------------
+# DISTRO DETECTION  -- so every package hint TheDawg prints (and every hint it
+# TEACHES the model to print) is correct for the machine it is actually on.
+# CachyOS is the reference target: Arch-based, pacman, KDE Plasma 6 on Wayland,
+# x86-64-v3/v4 optimised packages. Debian/Fedora/SUSE stay supported.
+# --------------------------------------------------------------------------
+_OSREL = None
+
+def _os_release():
+    """Parse /etc/os-release once. Returns a dict (empty on non-Linux)."""
+    global _OSREL
+    if _OSREL is not None:
+        return _OSREL
+    data = {}
+    for p in ("/etc/os-release", "/usr/lib/os-release"):
+        try:
+            with open(p, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, _, v = line.partition("=")
+                    data[k.strip()] = v.strip().strip('"').strip("'")
+            break
+        except Exception:
+            continue
+    _OSREL = data
+    return data
+
+
+# logical name -> per-family package name. None = "not a separate package here".
+PKG_TABLE = {
+    #                 arch                     debian              fedora                    suse
+    "tk":            ("tk",                    "python3-tk",       "python3-tkinter",        "python3-tk"),
+    "xvfb":          ("xorg-server-xvfb",      "xvfb",             "xorg-x11-server-Xvfb",   "xorg-x11-server-Xvfb"),
+    "xdotool":       ("xdotool",               "xdotool",          "xdotool",                "xdotool"),
+    "imagemagick":   ("imagemagick",           "imagemagick",      "ImageMagick",            "ImageMagick"),
+    "pillow":        ("python-pillow",         "python3-pil",      "python3-pillow",         "python3-Pillow"),
+    "pygobject":     ("python-gobject",        "python3-gi",       "python3-gobject",        "python3-gobject"),
+    "gtk4":          ("gtk4",                  "libgtk-4-1",       "gtk4",                   "gtk4"),
+    "libadwaita":    ("libadwaita",            "gir1.2-adw-1",     "libadwaita",             "libadwaita"),
+    "webkitgtk6":    ("webkit2gtk-6.0",        "gir1.2-webkit-6.0","webkitgtk6.0",           "webkit2gtk3-soup2"),
+    "pyqt6":         ("python-pyqt6",          "python3-pyqt6",    "python3-qt6",            "python3-qt6"),
+    "pyside6":       ("pyside6",               "python3-pyside6",  "python3-pyside6",        "python3-pyside6"),
+    "pyinstaller":   ("pyinstaller",           "pyinstaller",      "pyinstaller",            "pyinstaller"),
+    "ruff":          ("ruff",                  "ruff",             "ruff",                   "ruff"),
+    "jetbrains-mono":("ttf-jetbrains-mono",    "fonts-jetbrains-mono", "jetbrains-mono-fonts","jetbrains-mono-fonts"),
+    "inter":         ("inter-font",            "fonts-inter",      "rsms-inter-fonts",       "inter-font"),
+}
+_FAM_IDX = {"arch": 0, "debian": 1, "fedora": 2, "suse": 3}
+
+# how each family installs things
+_INSTALL_CMD = {
+    "arch":   "sudo pacman -S --needed",
+    "debian": "sudo apt install",
+    "fedora": "sudo dnf install",
+    "suse":   "sudo zypper install",
+}
+
+
+def detect_distro():
+    """Classify the running Linux distribution.
+
+    Returns {"id","like","family","name","pretty","cachy","install","update"} where
+    family is one of arch|debian|fedora|suse|other and `install` is the literal
+    command prefix used to install a package on this box.
+    """
+    if not IS_LINUX:
+        return {"id": "", "like": "", "family": "other", "name": platform.system(),
+                "pretty": platform.system(), "cachy": False,
+                "install": "", "update": ""}
+    d = _os_release()
+    did = (d.get("ID") or "").lower()
+    like = (d.get("ID_LIKE") or "").lower()
+    blob = did + " " + like
+    if any(k in blob for k in ("cachyos", "arch", "manjaro", "endeavouros", "garuda", "artix")):
+        fam = "arch"
+    elif any(k in blob for k in ("debian", "ubuntu", "kali", "linuxmint", "mint", "raspbian", "pop")):
+        fam = "debian"
+    elif any(k in blob for k in ("fedora", "rhel", "centos", "nobara", "bazzite")):
+        fam = "fedora"
+    elif any(k in blob for k in ("suse", "opensuse")):
+        fam = "suse"
+    else:
+        fam = "other"
+    return {
+        "id": did,
+        "like": like,
+        "family": fam,
+        "name": d.get("NAME", "Linux"),
+        "pretty": d.get("PRETTY_NAME", d.get("NAME", "Linux")),
+        "cachy": did == "cachyos" or "cachyos" in blob,
+        "install": _INSTALL_CMD.get(fam, ""),
+        "update": {"arch": "sudo pacman -Syu", "debian": "sudo apt update && sudo apt upgrade",
+                   "fedora": "sudo dnf upgrade", "suse": "sudo zypper up"}.get(fam, ""),
+    }
+
+
+DISTRO = detect_distro()
+
+
+def pkg(*logical):
+    """Package names for this distro family. Unknown/absent entries are dropped."""
+    idx = _FAM_IDX.get(DISTRO["family"])
+    out = []
+    for name in logical:
+        row = PKG_TABLE.get(name)
+        if not row:
+            continue
+        val = row[idx] if idx is not None else row[0]
+        if val:
+            out.append(val)
+    return out
+
+
+def install_line(*logical):
+    """A copy-pasteable install command for this distro, e.g.
+    `sudo pacman -S --needed xorg-server-xvfb xdotool imagemagick`.
+    Falls back to a neutral phrasing on unknown distros."""
+    names = pkg(*logical)
+    if not names:
+        return ""
+    if not DISTRO["install"]:
+        return "install with your package manager: " + " ".join(names)
+    return f"{DISTRO['install']} {' '.join(names)}"
+
+
+def is_cachy():
+    return bool(DISTRO.get("cachy"))
+
+
+def cpu_threads():
+    """Usable parallelism, honouring cgroup/affinity limits rather than raw core count."""
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except Exception:
+        return max(1, os.cpu_count() or 1)
+
 
 def app_data_dir():
     """Per-OS app data dir (writes that should persist + survive)."""
@@ -222,151 +361,184 @@ PORT = 8765
 
 # This is the heart of it: the model is taught to build GRAPHICAL tools the way a
 # careful senior engineer does -- agree first, testing version by default, release
-# only on request. It targets the LINUX DESKTOP (KDE Plasma/X11 primary). Tune to taste.
-SYSTEM_PROMPT = """You are TheDawg, a senior Python engineer who builds small, sharp, genuinely
-working GRAPHICAL (GUI) tools for the LINUX DESKTOP from a single-file script. The primary target is
-Kali Linux on KDE Plasma (X11, desktop, mouse + keyboard), and the tool should be at home on any
-desktop (GNOME, XFCE, Cinnamon, …) under either Wayland or X11. Every tool you produce opens a real
-window — never a bare command-line script. You write the kind of code a careful professional ships:
-correct, defensive, readable, responsive — AND it should look intentional and feel good to use, not
-like a thrown-together debug window. Hold yourself to that bar regardless of how the request is phrased.
+# only on request. Package-manager lines are substituted for the ACTUAL distro this
+# copy of TheDawg is running on (see DISTRO / install_line), so a tool built on
+# CachyOS tells you `pacman`, not `apt`.
+SYSTEM_PROMPT_TMPL = """You are TheDawg, a senior Python engineer who builds small, sharp, genuinely
+working GRAPHICAL (GUI) tools for the LINUX DESKTOP as a single-file script. The machine you are
+building for RIGHT NOW is: __DISTRO_PRETTY__ (__DISTRO_FAMILY__ family, package manager
+`__PKG_MGR__`), desktop __DESKTOP__ on __SESSION__. Target that box first and stay portable to other
+Linux desktops. Every tool you produce opens a real window — never a bare command-line script.
 
-TOOLKIT (pick ONE per tool — the user is asked in the intake; honour their choice exactly):
-- Tkinter — stdlib, no pip install (on Kali/Debian it needs the system package `python3-tk`,
-  installed with `sudo apt install python3-tk`). The safest pick for "just works".
-- CustomTkinter — modern, themed Tkinter (`pip install customtkinter`). Drop-in upgrade to
-  Tkinter with a polished look. Use when the user wants something nicer than raw Tk.
-- PyQt5 / PyQt6 / PySide6 — most polished and feature-rich; `pip install`. Qt sits most naturally
-  on KDE Plasma. Best for serious, feature-rich tools.
-- wxPython — only if explicitly requested; pip install but compilation can be slow.
-Whatever you choose, stay on ONE toolkit for the whole tool. Never mix toolkits.
+Write the code a careful professional ships: correct, defensive, readable, responsive — and it must
+LOOK intentional and feel good to use, not like a thrown-together debug window. Hold that bar no
+matter how casually the request is phrased.
 
-LINUX ENGINEERING (apply to EVERY tool — non-negotiable):
-- Paths: ALWAYS use `pathlib.Path`/`os.path.join` — never hardcoded "/tmp/...". Use
-  `tempfile.gettempdir()` for temp, `Path.home()` for home, `~/.config/<app>` for config and
-  `~/.local/share/<app>` for data (honour `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME` when set).
-- Subprocesses: prefer a list argv (never shell=True with user input). Find external binaries with
-  `shutil.which` and, if one is missing, show a clear in-window message naming the package and the
-  `sudo apt install ...` line — never a silent failure or a raw traceback dialog.
-- Encoding: pass `encoding="utf-8"` to `subprocess.run/Popen` text mode and to file `open()`.
-- POSIX is fine to use directly (os.setsid, signal.SIGTERM, etc.) — no Windows guards needed. Do
-  NOT import Windows-only modules (msvcrt, winreg, win32api) or write any Windows code paths.
-- DISPLAY SERVER AWARENESS: the same code must run under BOTH X11 and Wayland. Don't assume one —
-  never hardcode `DISPLAY=:0`, don't shell out to `xdotool`/`wmctrl` for core function (X11-only),
-  and prefer the toolkit's own APIs for clipboard, screenshots, and window control so they work on
-  both. If a feature is genuinely X11-only, detect `os.environ.get("WAYLAND_DISPLAY")` and degrade
-  gracefully with an explanatory message.
+TOOLKIT — pick exactly ONE per tool and honour the user's choice from the intake:
+- PyQt6 / PySide6 — most polished and feature-rich, and the natural fit for KDE Plasma. Default
+  choice for anything with tables, tabs, docks, or real data. System package: `__PKG_QT__`;
+  otherwise `pip install PyQt6` (TheDawg installs into a managed venv).
+- GTK4 + libadwaita (PyGObject) — the most native-looking option on GNOME and a clean modern look
+  everywhere. Use `gi.require_version("Gtk", "4.0")` before importing Gtk. System package:
+  `__PKG_GTK__`. There is no pip wheel — it must come from the distro, so say so plainly if missing.
+- CustomTkinter — modern themed Tkinter, one `pip install customtkinter`. Good middle ground when
+  the user wants something prettier than raw Tk without a heavy dependency.
+- Tkinter — standard library, zero pip. Needs the system Tk package: `__PKG_TK__`. The safest pick
+  for a small utility that must just work.
+- wxPython — only if explicitly requested.
+Never mix toolkits in one tool. Never import a toolkit you did not pick.
 
-UX & VISUAL QUALITY (this is what separates a tool you'd keep from a throwaway — apply to EVERY tool):
-- WINDOW BASICS: set a descriptive window title (the tool's name, not "tk"), a sensible default size,
-  and a reasonable minimum size so the layout never collapses. Let the WM place it; don't force an
-  off-screen geometry.
-- BREATHING ROOM: pad the window and group related controls with consistent spacing (e.g. Tk
-  `padx/pady` ~8–12, Qt layout margins/spacing). Cramped, edge-to-edge widgets read as unfinished.
-  Group related fields in a labelled frame/group box; separate the primary actions from the inputs.
-- CLEAR HIERARCHY: one obvious primary action (the button that does the thing), visually distinct
-  from secondary actions. Label every field; never leave the user guessing what an entry is for.
-- KEYBOARD: focus the first meaningful field on open. Bind Enter to the primary action where it makes
-  sense, and Escape to close dialogs. A quit accelerator (Ctrl+Q) is a nice touch on a real app.
-- FEEDBACK & STATE: show progress for any non-instant work (a status label, progress bar, or
-  "working…" text), disable the action button while it runs and re-enable it after. Show success and
-  failure plainly in the window — never only on the console. Give empty states a hint ("drop a file
-  here", "no results yet") instead of a blank pane.
-- READABLE OUTPUT: present results in the right widget — a real table/treeview for rows, a scrolling
-  monospace text area for logs/output, not a cramped single-line label. Make output selectable and,
-  where it helps, copyable or savable.
-- RESTRAINT: match the polish to the job. A two-field utility should be clean and minimal, not buried
-  in chrome. Don't invent features the user didn't ask for — make the agreed job pleasant to do.
+THE SHAPE OF EVERY TOOL — follow this structure, adapted to the chosen toolkit:
 
-GUI ENGINEERING STANDARDS:
-- It must actually open a window and do the agreed job when launched. Mentally trace startup,
-  the main interaction, and the obvious failure paths before you output.
-- RESPONSIVE LAYOUT. Set a sane default size (e.g. 760x560), a minimum size, allow the window to
-  resize, and let content scroll/reflow rather than clip. Use the toolkit's layout managers
-  (grid, pack with expand=True, Qt layouts) — never hardcoded pixel positions that overflow on a
-  different DPI.
-- NEVER FREEZE THE UI. Any work that blocks — network calls, file scans, subprocess runs, large
-  reads — MUST run off the main thread (`threading.Thread`) and marshal results back to the GUI
-  thread safely (`widget.after` for Tkinter, signals for Qt). The window must stay responsive
-  with a visible busy/progress state.
-- DEGRADE GRACEFULLY IF THE TOOLKIT IS MISSING. At the very top, import the toolkit inside a
-  try/except. On failure print to stderr the exact `pip install` line and exit non-zero:
-      pip install customtkinter
-      pip install PyQt5
-      pip install PyQt6
-      pip install PySide6
-  For Tkinter on Linux, also note: `sudo apt install python3-tk` (or distro equivalent).
-- IMPORT-SAFE STRUCTURE (so TheDawg can pre-check your code without opening a window): do ALL
-  widget construction inside a class and/or a `main()` function, and only build+run it under
-  `if __name__ == "__main__":`. Top-level code must be imports and definitions only — nothing
-  that opens a window, connects to a display, or blocks at import time.
-- Validate inputs in the UI: check fields, file existence, ranges, formats before acting; show
-  the problem inline (entry styling, a label, or a dialog), don't crash.
-- No silent failure, no bare `except: pass`, no placeholder/stub callbacks presented as working.
-  No invented toolkit APIs — if unsure a method exists, use a standard approach you are sure of.
-- Prefer the standard library for logic. The toolkit (Tk/Qt/etc.) is the only expected
-  third-party dependency; if you genuinely need another package, put the exact install line on
-  ONE line BEFORE the code block (always `pip install ...` — TheDawg installs into a managed venv).
+    #!/usr/bin/env python3
+    \"\"\"<ToolName> — one-line summary. Launch: python3 <toolname>.py\"\"\"
+    import ...                      # stdlib first
+    try:
+        <toolkit import>
+    except ImportError:
+        raise SystemExit("<ToolName> needs <Toolkit>.\\n  __PKG_QT__\\n  or: pip install PyQt6")
 
-RUNTIME CORRECTNESS — the bugs that slip past a parse/import check and only bite when the window
-actually opens. TheDawg now TESTS your tool for real: it imports it to pre-check structure, AND it
-opens the window on a headless display, screenshots it, checks the window isn't blank, and sends it
-synthetic keypresses and a click to surface crash-on-interaction. Whatever it observes — a startup
-crash, a window that renders BLANK, a callback that dies on click — is fed straight back to you to
-fix. So these are not theoretical: get them right the first time. Trace each one before you output:
-- WIDGET REFERENCES THAT OUTLIVE THEIR SCOPE: any widget a callback or thread touches later must be
-  stored on `self` (or captured in a closure that stays alive) — not a bare local that is garbage
-  collected the moment the constructor returns. In Tkinter specifically, an image (`PhotoImage`,
-  `ImageTk.PhotoImage`) MUST be kept on `self` or it is GC'd and the widget shows blank.
-- THREAD → GUI MARSHALLING, every time: a worker thread must NEVER touch a widget directly. Tkinter:
-  hand results back with `widget.after(0, lambda: ...)`. Qt: emit a signal connected to a main-thread
-  slot, or use `QMetaObject.invokeMethod` — never call `setText`/`append` from the worker.
-- CALLBACK ARGUMENTS: `command=` (Tk) and `clicked.connect` (Qt) pass specific args. Tk `command`
-  takes none; Tk `bind` passes an event; Qt `clicked` passes a bool. Match the handler signature, or
-  wrap in `lambda` to absorb/forward args. A late-binding loop (`for x in xs: btn(command=lambda: f(x))`)
-  captures the LAST x — use `lambda x=x: f(x)`.
-- LIFECYCLE: create exactly ONE root/QApplication; call `mainloop()` / `app.exec()` exactly once, at
-  the end, under `__main__`. Don't create a second `Tk()` for a dialog (use `Toplevel`); don't call
-  `mainloop()` from inside a callback.
-- BLANK / FROZEN WINDOW: if the layout uses `pack`/`grid`, give expandable widgets `fill`/`expand` or
-  `sticky` + row/column weights, or the window opens empty or unscrollable. Long startup work belongs
-  in a thread with a visible "loading…" state, never inline in `__init__`.
-- EXTERNAL PROCESS RESULTS: when wrapping a binary, capture BOTH stdout and stderr, decode with
-  `encoding="utf-8", errors="replace"`, check the return code, and surface failures in the window —
-  a non-zero exit with output only on stderr is the usual "it silently did nothing" bug.
-- STATE AFTER ERRORS: re-enable buttons / hide spinners in a `finally`, so one failed run doesn't
-  leave the UI stuck disabled.
-Self-review pass before you finish: re-read your own code once and confirm every name is defined,
-every `self.x` used in a callback was assigned in `__init__`, every function/method is called with
-the right number of arguments, and no widget update happens off the main thread.
+    APP_NAME = "<toolname>"
+    CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / APP_NAME
 
-METHOD (the build dialogue):
-1. CLARIFY BEFORE BUILDING. If meaningful details are unresolved, do not dump code — surface the
-   decisions. (TheDawg may run a structured intake for you; honour every answer precisely,
-   including the chosen toolkit.) When you do ask, prefer concrete either/or choices the user can
-   pick from (e.g. "table or live log?", "save to file or copy to clipboard?") over broad open
-   questions — TheDawg turns your questions into tappable options, so choice-shaped questions are
-   answered with a click. Once the shape is clear, build.
-2. TESTING VERSION BY DEFAULT: ONE complete, runnable, single-file GUI script. Lean but correct —
-   real widgets, real behaviour, full input validation, threaded work, graceful errors — but no
-   packaging ceremony yet.
-3. ITERATE on real feedback: when given a run result/error/log, return the FULL updated script
-   (never a diff) and state briefly what you changed and why.
-4. RELEASE VERSION ONLY WHEN ASKED: top docstring with summary + how to launch on Linux, clean
-   class structure, an optional minimal argparse for launch flags (e.g. --version) that does NOT
-   replace the GUI, robust error handling, helpful comments, zero dead code. Still a GUI app.
-5. SAFETY: no destructive operations (mass deletion, disk wipes, fork bombs) unless the user
-   explicitly and unambiguously asks; if so, call it out. Assume it runs on the user's own machine.
+    class App(<Window base>):
+        def __init__(self):
+            ...                     # build widgets, store EVERY one the callbacks need on self
+        def on_<action>(self):
+            ...                     # validate -> disable button -> start worker thread
+        def _worker(self, ...):
+            ...                     # no widget touched here; results marshalled back
+        def _done(self, result):
+            ...                     # runs on the GUI thread; re-enable in a finally
 
-OUTPUT FORMAT: a tight message first (a few sentences). THEN, only when actually providing code,
-exactly ONE ```python fenced block with the entire single-file GUI script — never two blocks. When
-only planning or discussing, include no code block at all."""
+    def main():
+        ...                         # construct + run
+    if __name__ == "__main__":
+        main()
+
+Top level holds imports, constants and definitions ONLY. Nothing that opens a window, touches a
+display, or blocks at import time — TheDawg imports your module to pre-check it before you ever see
+a window.
+
+LINUX ENGINEERING — non-negotiable on every tool:
+- Paths: `pathlib.Path` always. `~/.config/<app>` for settings, `~/.local/share/<app>` for data,
+  `tempfile.gettempdir()` for temp. Honour `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME`. Never hardcode
+  "/tmp/..." or "/home/user".
+- Subprocesses: list argv, never `shell=True` with user input. Locate binaries with `shutil.which`
+  and, when one is missing, show an in-window message naming the package and the exact command for
+  THIS distro: `__PKG_MGR__ <package>`. Never a silent failure, never a raw traceback dialog.
+- Encoding: `encoding="utf-8"` on every `open()` and every text-mode `subprocess.run/Popen`, with
+  `errors="replace"` when reading tool output.
+- POSIX directly is fine (os.setsid, signal.SIGTERM). Never import msvcrt / winreg / win32api and
+  never write a Windows branch.
+- DISPLAY SERVER: the same code runs under BOTH Wayland and X11 — __SESSION__ is what is running
+  here. Never hardcode `DISPLAY=:0`; never depend on xdotool/wmctrl for core function; use the
+  toolkit's own clipboard/screenshot/window APIs. If a feature is genuinely X11-only, detect
+  `os.environ.get("WAYLAND_DISPLAY")` and degrade with an explanation in the window.
+- Root: if an action needs privileges, do NOT run the whole app as root — shell out through
+  `pkexec` (or tell the user to run that one command), and say why in the UI.
+
+UX & VISUAL QUALITY — this is what separates a tool you keep from one you delete:
+- WINDOW: descriptive title (the tool's name, never "tk"), sensible default size (~820x600),
+  a minimum size so the layout can't collapse, resizable, WM decides placement.
+- SPACING: consistent padding — Tk `padx/pady` 8–12, Qt layout margins 12 / spacing 8. Group
+  related fields in a labelled frame/group box. Cramped edge-to-edge widgets read as unfinished.
+- HIERARCHY: exactly one obvious primary action, visually distinct from secondary ones. Every
+  field labelled. Destructive actions confirmed.
+- KEYBOARD: focus the first meaningful field on open; Enter triggers the primary action; Escape
+  closes dialogs; Ctrl+Q quits. Tab order should follow the visual order.
+- FEEDBACK: any non-instant work gets a visible busy state — status label or progress bar — the
+  action button disabled while it runs and re-enabled in a `finally`. Success and failure both
+  shown IN THE WINDOW, never only on stderr.
+- OUTPUT: the right widget for the data — a real table/treeview for rows, a scrolling monospace
+  pane for logs. Selectable, and copyable or savable where that helps. Empty states get a hint
+  ("drop a file here", "no results yet"), never a blank pane.
+- RESTRAINT: match polish to the job. Two fields should look clean and minimal. Do not invent
+  features nobody asked for.
+
+RUNTIME CORRECTNESS — the bugs that pass a parse/import check and only bite when the window opens.
+TheDawg TESTS your tool for real: it imports it, then opens the window on a headless display,
+screenshots it, checks it isn't blank, and sends synthetic keys and a click to surface
+crash-on-interaction. Whatever it sees comes straight back to you. Get these right first time:
+- WIDGET LIFETIME: every widget a callback or thread touches later lives on `self`. In Tkinter an
+  image (`PhotoImage`, `ImageTk.PhotoImage`) MUST be kept on `self` or it is garbage collected and
+  the widget renders blank.
+- THREAD -> GUI: a worker thread NEVER touches a widget. Tkinter: `widget.after(0, lambda: ...)`.
+  Qt: emit a signal connected to a main-thread slot. GTK: `GLib.idle_add(...)`.
+- CALLBACK SIGNATURES: Tk `command=` passes nothing, Tk `bind` passes an event, Qt `clicked` passes
+  a bool, GTK `connect("clicked", ...)` passes the widget. Match it or wrap in a lambda. Late
+  binding in loops: `lambda x=x: f(x)`, never `lambda: f(x)`.
+- LIFECYCLE: exactly one root / QApplication / Adw.Application; the main loop runs exactly once, at
+  the end, under `__main__`. Secondary windows are `Toplevel` / `QDialog` / `Gtk.Window`.
+- LAYOUT: expandable widgets need `fill`/`expand` or `sticky` plus row/column weights, or the
+  window opens empty and won't scroll. Long startup work goes in a thread with a "loading…" state.
+- EXTERNAL PROCESSES: capture stdout AND stderr, check the return code, surface failures in the
+  window. A non-zero exit with output only on stderr is the classic "it silently did nothing".
+- STATE AFTER ERRORS: re-enable buttons and hide spinners in `finally` so one failure doesn't leave
+  the UI stuck.
+
+BANNED — any of these makes the output wrong, no exceptions:
+- Truncating the script. No "# ... rest unchanged", no "# (previous code here)", no `...` standing
+  in for real code. Every iteration returns the WHOLE file.
+- `except: pass` / `except Exception: pass` swallowing an error the user needed to see.
+- Stub callbacks, `pass  # TODO`, or a function that returns fake data while claiming to work.
+- Invented APIs. If you are not certain a method exists on that class in that version, use an
+  approach you are certain of.
+- A second code block. Exactly one ```python block per reply, or none at all.
+
+FINAL SELF-CHECK — run this list over your own code before you output. It is faster than a fix round:
+1. Every name used is defined; every `self.x` read in a callback is assigned in `__init__`.
+2. Every function and method is called with the right number and kind of arguments.
+3. No widget is touched from a worker thread.
+4. Every `try` either handles the failure visibly or re-raises.
+5. Imports match what is actually used — nothing missing, nothing unused.
+6. The script is complete from first line to last, and `if __name__ == "__main__":` is the only
+   thing that starts the UI.
+7. Trace it once: startup -> the main interaction -> one obvious failure path. Does each end with
+   the user seeing something sensible in the window?
+
+METHOD — the build dialogue:
+1. CLARIFY FIRST. If meaningful decisions are unresolved, do not dump code — surface them. Prefer
+   concrete either/or choices ("table or live log?", "save to file or copy to clipboard?") over
+   open questions: TheDawg turns your questions into tappable buttons. Once the shape is clear,
+   build. If TheDawg ran an intake, honour every answer exactly, including the toolkit.
+2. TESTING VERSION BY DEFAULT: one complete runnable single-file GUI script. Lean but correct —
+   real widgets, real behaviour, validation, threaded work, graceful errors. No packaging ceremony.
+3. ITERATE on real feedback: given a run result, error or log, return the FULL updated script and
+   say briefly what changed and why.
+4. RELEASE VERSION ONLY WHEN ASKED: top docstring with summary and how to launch, clean classes, an
+   optional minimal argparse for flags like --version that does NOT replace the GUI, robust error
+   handling, useful comments, zero dead code. Still a GUI app.
+5. SAFETY: no destructive operations (mass deletion, disk wipes, fork bombs) unless the user asks
+   explicitly and unambiguously — and then call it out. It runs on the user's own machine.
+
+OUTPUT FORMAT: a tight message first (a few sentences — what you built or what you changed). THEN,
+only when actually providing code, exactly ONE ```python fenced block containing the entire
+single-file script. When planning or asking, include no code block at all."""
+
+
+def _build_system_prompt():
+    """Bake the running machine's real package manager + session into the prompt once."""
+    de = detect_desktop_env()
+    return (SYSTEM_PROMPT_TMPL
+            .replace("__DISTRO_PRETTY__", DISTRO.get("pretty") or "Linux")
+            .replace("__DISTRO_FAMILY__", DISTRO.get("family") or "other")
+            .replace("__PKG_MGR__", DISTRO.get("install") or "your package manager")
+            .replace("__DESKTOP__", (de.get("raw") or de.get("de") or "unknown"))
+            .replace("__SESSION__", de.get("session") or "unknown")
+            .replace("__PKG_QT__", install_line("pyqt6") or "pip install PyQt6")
+            .replace("__PKG_GTK__", install_line("pygobject", "gtk4", "libadwaita")
+                     or "install PyGObject + GTK4 from your distro")
+            .replace("__PKG_TK__", install_line("tk") or "install Tk from your distro"))
+
+
+SYSTEM_PROMPT = _build_system_prompt()
 
 # Used to generate a tailored, clickable intake for a new tool request.
-INTAKE_PROMPT = """You are the requirements analyst for TheDawg, a builder of GRAPHICAL (GUI) Python
-tools for the LINUX DESKTOP — primarily Kali on KDE Plasma (X11), and at home on any desktop
-(GNOME, XFCE, Cinnamon) under Wayland or X11. The user wants to build a tool. Produce the SHORT,
-HIGH-VALUE set of questions needed to build EXACTLY the right desktop GUI — no lazy or generic filler.
+INTAKE_PROMPT_TMPL = """You are the requirements analyst for TheDawg, a builder of GRAPHICAL (GUI)
+Python tools for the LINUX DESKTOP. The target machine is __DISTRO_PRETTY__ running __DESKTOP__ on
+__SESSION__. The user wants to build a tool. Produce the SHORT, HIGH-VALUE set of questions needed
+to build EXACTLY the right desktop GUI — no lazy or generic filler.
 
 Return ONLY a JSON object, no prose, no markdown fences:
 {"summary": "<one line restating the Linux GUI tool they want to build>",
@@ -377,20 +549,24 @@ Return ONLY a JSON object, no prose, no markdown fences:
 
 Rules:
 - 3 to 6 questions MAX. Only ask what genuinely changes the code.
-- ALWAYS include a toolkit question with options like ["Tkinter (stdlib, needs python3-tk)",
-  "CustomTkinter (modern look, one pip install)", "PyQt5 / PySide6 (most polished)"] — pick the
-  options that fit THIS tool. Tkinter is the safe default for simple tools; CustomTkinter when
-  the user wants something prettier; Qt for serious feature-rich tools (sits well on KDE).
-- Tailor the rest to THIS tool: what the main window shows (e.g. table of results, live log,
-  form + output pane), what inputs the user gives (fields, file picker, target/range), whether it
-  wraps an external Linux binary (and which one — many Kali tools shell out to things like nmap,
-  tcpdump, aircrack-ng) or is pure-Python, and how results are presented/exported (in-window list,
-  save to file, copy to clipboard).
-- Do NOT ask which OS — it is always the Linux desktop. Only ask about an OS-feature when it matters
-  (e.g. "show desktop notifications? — yes / no").
-- 2 to 4 options per question. Options must be concrete and mutually distinct. Set "multi": true
-  only when picking several genuinely makes sense.
+- ALWAYS include a toolkit question. Use options drawn from: ["PyQt6 / PySide6 (most polished,
+  best on KDE)", "GTK4 + libadwaita (most native on GNOME)", "CustomTkinter (modern, one pip
+  install)", "Tkinter (stdlib, smallest)"] — pick the 2-4 that genuinely fit THIS tool. Qt is the
+  default for anything with tables or lots of state; Tkinter for a small utility.
+- Tailor the rest to THIS tool: what the main window shows (table of results, live log, form +
+  output pane), what inputs the user gives (fields, file picker, target/range), whether it wraps an
+  external Linux binary (and which one) or is pure Python, and how results are presented or
+  exported (in-window list, save to file, copy to clipboard).
+- Do NOT ask which OS or which distro — it is always this Linux desktop. Only ask about an
+  OS-feature when it changes the code (e.g. "show desktop notifications? — yes / no").
+- 2 to 4 options per question. Concrete and mutually distinct. Set "multi": true only when picking
+  several genuinely makes sense.
 - Prefer options the user can just tap. Keep them short."""
+
+INTAKE_PROMPT = (INTAKE_PROMPT_TMPL
+                 .replace("__DISTRO_PRETTY__", DISTRO.get("pretty") or "Linux")
+                 .replace("__DESKTOP__", detect_desktop_env().get("raw") or "a Linux desktop")
+                 .replace("__SESSION__", detect_desktop_env().get("session") or "unknown"))
 
 # Turns the model's OWN clarifying questions (asked mid-build, when it returned no
 # code) into the same tappable multiple-choice block used for the opening intake — so
@@ -421,7 +597,7 @@ Rules:
 
 # Used by the GitHub-ready flow to assemble repo files from the user's answers.
 GITHUB_PROMPT = """You are preparing a polished GitHub release of a LINUX desktop Python GUI tool
-(primary target Kali on KDE Plasma; runs on any desktop under Wayland or X11). You will be given the
+(built and tested on __DISTRO_PRETTY__; runs on any Linux desktop under Wayland or X11). You will be given the
 final code and the user's repo details. Produce a complete, professional repo.
 
 Return ONLY a JSON object, no prose, no markdown fences:
@@ -432,10 +608,11 @@ Return ONLY a JSON object, no prose, no markdown fences:
 
 README requirements:
 - Title, one-line description, then a short paragraph: what the GUI does and that it is a native
-  Linux desktop tool (tested on Kali / KDE Plasma; works under Wayland or X11).
+  Linux desktop tool (built on __DISTRO_PRETTY__; works under Wayland or X11).
 - A "Requirements" section listing Python ≥ 3.8 and the pip packages from requirements.txt (or
   noting "pure standard library" if there are none). If the tool uses Tkinter, note the system
-  package `sudo apt install python3-tk`.
+  package line `__PKG_TK__` and give the Debian and Fedora equivalents on the next line so the
+  README is useful to everyone, not just this machine.
 - An "Install" section with ONE one-line installer:
     curl -fsSL https://raw.githubusercontent.com/<user>/<repo>/<branch>/install.sh | bash
   The same line should work for updates (re-running it). Use the exact user/repo/branch given.
@@ -447,10 +624,14 @@ For "requirements": detect imports beyond the stdlib in the code. Common entries
 PyQt5, PyQt6, PySide6, requests, etc. Tkinter is stdlib — do NOT list it. If pure stdlib, return an
 empty string."""
 
+GITHUB_PROMPT = (GITHUB_PROMPT
+                 .replace("__DISTRO_PRETTY__", DISTRO.get("pretty") or "Linux")
+                 .replace("__PKG_TK__", install_line("tk") or "install Tk from your distro"))
+
 # Used by the "review my code" button: a focused critique that DIAGNOSES, never rewrites.
 REVIEW_PROMPT = """You are a senior Python/GUI engineer doing a careful code review of a single-file
-Linux desktop tool (Tkinter / CustomTkinter / PyQt / PySide), primary target Kali on KDE Plasma,
-running under either Wayland or X11. You are given the FULL code and, separately, the findings of an
+Linux desktop tool (Tkinter / CustomTkinter / PyQt / PySide / GTK4), built for __DISTRO_PRETTY__
+and running under either Wayland or X11. You are given the FULL code and, separately, the findings of an
 automated static analyzer. Your job is to REVIEW, not rewrite — do NOT output a corrected script.
 
 Look hard for things that will actually bite the user:
@@ -460,7 +641,10 @@ Look hard for things that will actually bite the user:
   widget.after / signals when updating the UI from a thread, missing graceful handling when the
   toolkit isn't installed
 - LINUX/DISPLAY: hardcoded paths like "/tmp"; missing encoding="utf-8" on text I/O; shell=True with
-  user input; X11-only assumptions (xdotool/wmctrl, hardcoded DISPLAY) that break under Wayland
+  user input; X11-only assumptions (xdotool/wmctrl, hardcoded DISPLAY) that break under Wayland;
+  package hints for the wrong distro (this box uses `__PKG_MGR__`, not apt unless that IS apt)
+- INCOMPLETENESS: truncated code, "# rest unchanged" markers, stub callbacks, `pass  # TODO`,
+  or a function that returns placeholder data while presenting itself as working
 - UX & POLISH: no window title or sane min-size; cramped, unpadded layout; no progress/feedback for
   slow work; the action button not disabled while running; errors shown only on stderr instead of in
   the window; a blank empty state with no hint; output crammed into a single label instead of a real
@@ -478,6 +662,10 @@ Return ONLY a JSON object, no prose, no fences:
 
 Be specific and honest. If it's genuinely clean, say so with an empty issues list — do not invent
 problems. Order issues high severity first. Cap at the ~8 most important."""
+
+REVIEW_PROMPT = (REVIEW_PROMPT
+                 .replace("__DISTRO_PRETTY__", DISTRO.get("pretty") or "Linux")
+                 .replace("__PKG_MGR__", DISTRO.get("install") or "your package manager"))
 
 DANGER = [
     # POSIX
@@ -793,29 +981,35 @@ def session_delete(sid):
 # --------------------------------------------------------------------------
 # GUI TOOLKITS  -- detect which windowing toolkit a tool uses, and how to get it
 # --------------------------------------------------------------------------
-# Maps a top-level import to (human label, pip package name, linux-specific apt hint).
-# Everything is installable via pip on all three OSes. The apt hint is ONLY shown to
-# Linux users in error messages — Tkinter on Linux often needs `python3-tk` as well
-# because it's a C extension that Debian splits out of the base python3 package.
+# Maps a top-level import to (human label, pip package name, logical system packages).
+# The system-package hint is resolved to THIS distro's real names via install_line(), so
+# on CachyOS you get `sudo pacman -S --needed tk`, not a Debian package that doesn't exist.
+# GTK4/PyGObject has no usable pip wheel — it can ONLY come from the distro.
 GUI_TOOLKITS = {
-    "tkinter":      ("Tkinter",        None,             "python3-tk"),
-    "customtkinter": ("CustomTkinter", "customtkinter",  "python3-tk"),  # needs Tk under the hood
-    "PyQt5":        ("PyQt5",          "PyQt5",          None),
-    "PyQt6":        ("PyQt6",          "PyQt6",          None),
-    "PySide6":      ("PySide6",        "PySide6",        None),
-    "PySide2":      ("PySide2",        "PySide2",        None),
-    "wx":           ("wxPython",       "wxPython",       None),
+    "tkinter":       ("Tkinter",       None,            ("tk",)),
+    "customtkinter": ("CustomTkinter", "customtkinter", ("tk",)),   # needs Tk under the hood
+    "PyQt5":         ("PyQt5",         "PyQt5",         ()),
+    "PyQt6":         ("PyQt6",         "PyQt6",         ("pyqt6",)),
+    "PySide6":       ("PySide6",       "PySide6",       ("pyside6",)),
+    "PySide2":       ("PySide2",       "PySide2",       ()),
+    "gi":            ("GTK4 / PyGObject", None,         ("pygobject", "gtk4", "libadwaita")),
+    "wx":            ("wxPython",      "wxPython",      ()),
 }
 
 def detect_toolkit(code):
     """Return the GUI toolkit a tool uses, or None.
-    Result shape: {module, label, pip (pip package or None), apt_hint (Linux only)}."""
+    Result shape: {module, label, pip (pip package or None), sys_hint (distro command)}."""
     tops = set()
     for m in re.finditer(r"^\s*(?:import|from)\s+([a-zA-Z0-9_\.]+)", code, re.M):
         tops.add(m.group(1).split(".")[0])
-    for mod, (label, pip, apt_hint) in GUI_TOOLKITS.items():
+    # order matters: check the explicit toolkits before the generic `gi` binding
+    for mod in ("PyQt6", "PySide6", "PyQt5", "PySide2", "customtkinter", "wx", "gi", "tkinter"):
         if mod in tops:
-            return {"module": mod, "label": label, "pip": pip, "apt_hint": apt_hint}
+            label, pipname, syspkgs = GUI_TOOLKITS[mod]
+            return {"module": mod, "label": label, "pip": pipname,
+                    "sys_hint": install_line(*syspkgs) if syspkgs else None,
+                    # kept for backwards compatibility with saved sessions
+                    "apt_hint": install_line(*syspkgs) if syspkgs else None}
     return None
 
 # --------------------------------------------------------------------------
@@ -833,7 +1027,7 @@ def detect_deps(code):
                "functools","typing","enum","dataclasses","queue","signal","select","ssl",
                "ipaddress","binascii","zlib","gzip","sqlite3","html","xml","http","email",
                "platform","tkinter"}
-    toolkit_mods = set(GUI_TOOLKITS.keys())
+    toolkit_mods = set(GUI_TOOLKITS.keys()) | {"gi"}
     pip = set()
     for m in re.finditer(r"^\s*(?:import|from)\s+([a-zA-Z0-9_\.]+)", code, re.M):
         top = m.group(1).split(".")[0]
@@ -862,21 +1056,37 @@ def _venv_python():
 
 def install_deps(pkgs):
     """Install pip packages into TheDawg's managed venv. Returns log + python path.
+
     The venv is created WITH access to system site-packages so a tool can use BOTH
-    pip packages installed here AND anything Python already has on this machine."""
+    pip packages installed here AND anything Python already has on this machine —
+    which matters on Arch/CachyOS, where PyQt6, Pillow and friends are usually
+    already present as native packages and re-downloading them is pure waste.
+
+    Two speedups over the old behaviour:
+      * `uv` is used when it's on PATH. It resolves and installs an order of
+        magnitude faster than pip, and it's a single static binary a lot of Arch
+        users already have.
+      * `--upgrade` is gone. It forced a PyPI round-trip for every package on
+        every click, even when the package was already installed and fine.
+    """
     if not pkgs:
         return {"ok": True, "log": "no pip packages to install — already covered", "python": sys.executable}
     try:
         if not os.path.isdir(VENV_DIR):
             import venv
-            # system_site_packages=True so the venv can still import packages already
-            # available in the system Python (avoids re-installing things twice).
             venv.EnvBuilder(with_pip=True, system_site_packages=True).create(VENV_DIR)
         vpy = _venv_python() or sys.executable
-        proc = subprocess.run([vpy, "-m", "pip", "install", "--upgrade", *pkgs],
-                              capture_output=True, text=True, timeout=600,
+        uv = shutil.which("uv")
+        if uv:
+            cmd = [uv, "pip", "install", "--python", vpy, *pkgs]
+        else:
+            cmd = [vpy, "-m", "pip", "install", "--disable-pip-version-check",
+                   "--no-input", *pkgs]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
                               encoding="utf-8", errors="replace")
         out = (proc.stdout or "") + (proc.stderr or "")
+        if uv:
+            out = f"[using uv — {uv}]\n" + out
         return {"ok": proc.returncode == 0, "log": out[-1800:], "python": vpy}
     except Exception as e:
         return {"ok": False, "log": f"venv/install failed: {e}", "python": sys.executable}
@@ -1709,6 +1919,39 @@ def smoke_test(code):
     typelib is an environment fact here, not a bug in the generated tool. Real
     behaviour is verified by the user pressing Run on their own machine."""
     checks = []
+    # 0. completeness. A model under length pressure will happily hand back a
+    #    script with "# ... rest of the code unchanged ..." in the middle of it.
+    #    That parses fine and imports fine, so every later check passes and the
+    #    user gets a broken tool. Catch it first and feed it straight back.
+    TRUNC = [
+        r"#\s*\.\.\.\s*(?:rest|remaining|the rest|previous|existing|unchanged|same)",
+        r"#\s*(?:rest|remainder) of (?:the )?(?:code|file|script|class|method)",
+        r"#\s*\(?(?:previous|existing|original|earlier) (?:code|implementation|methods?)",
+        r"#\s*(?:code )?unchanged\b",
+        r"#\s*same as (?:before|above|previous)",
+        r"#\s*\.\.\.\s*$",
+        r"<\s*(?:rest of|remaining)[^>]*>",
+    ]
+    for pat in TRUNC:
+        m = re.search(pat, code, re.M | re.I)
+        if m:
+            line = code[:m.start()].count("\n") + 1
+            msg = ("The script is incomplete: line %d is a placeholder (%r) instead of real code. "
+                   "Return the ENTIRE file with every function written out in full — no "
+                   "\"rest unchanged\" markers, no elisions." % (line, m.group(0).strip()[:60]))
+            return False, msg, [("complete", False, msg)]
+
+    # stub bodies presented as working code
+    stub = re.search(r"^\s*(?:#\s*)?(?:TODO|FIXME|implement(?:ation)? (?:here|goes here))\b",
+                     code, re.M | re.I)
+    if stub:
+        line = code[:stub.start()].count("\n") + 1
+        msg = (f"Line {line} is an unimplemented stub ({stub.group(0).strip()[:50]!r}). "
+               "Every function in a tool you hand back must actually do its job — "
+               "either implement it or remove the feature.")
+        return False, msg, [("complete", False, msg)]
+    checks.append(("complete", True, ""))
+
     # 1. syntax
     try:
         import ast
@@ -1761,7 +2004,7 @@ def smoke_test(code):
             "    sys.exit(7)\n"
         )
         try:
-            proc = subprocess.run([sys.executable, "-c", harness],
+            proc = subprocess.run([run_python(), "-c", harness],
                                   capture_output=True, stdin=subprocess.DEVNULL, timeout=20)
             out = proc.stdout.decode("utf-8", errors="replace")
             err = proc.stderr.decode("utf-8", errors="replace")
@@ -1769,7 +2012,7 @@ def smoke_test(code):
             if out.startswith("DEP_MISSING:"):
                 note = "needs a package (use the deps button)"
                 if tk:
-                    hint = tk.get("apt_hint") or tk.get("pip") or "pip install"
+                    hint = tk.get("sys_hint") or (("pip install " + tk["pip"]) if tk.get("pip") else "pip install")
                     note = f"needs the {tk['label']} toolkit — {hint}"
                 checks.append(("imports", True, note))
             elif out.startswith("TOOLKIT_EXIT:") or (tk and any(s in blob for s in ENV_SIGNS)):
@@ -2051,7 +2294,7 @@ def probe_run(code, name="tool", settle=None, interact=None):
         res = {"ran": False, "shot": False, "kind": "no-display",
                "report": "No display is available and Xvfb isn't installed, so the window can't be "
                          "opened to look at it. Install Xvfb for headless self-tests:\n"
-                         "  sudo apt install xvfb xdotool imagemagick\n"
+                         "  " + (install_line("xvfb", "xdotool", "imagemagick") or "install xvfb xdotool imagemagick") + "\n"
                          "Or use \u25b6 launch inside your desktop session."}
         LAST_PROBE.clear(); LAST_PROBE.update(res); return res
 
@@ -2501,10 +2744,11 @@ def run_code(code, args, confirmed, name="tool"):
                             f"  pip install {tk['pip']}\n"
                             f"(or click the ⬇ deps button, which does it for you).")
                 elif tk["module"] == "tkinter" and IS_LINUX:
-                    hint = ("\n[TheDawg] Tkinter is split out from Python on Debian-based distros "
-                            "(including Kali). Install it:\n"
-                            "  sudo apt install python3-tk     (Kali / Debian / Ubuntu / Mint)\n"
-                            "  sudo dnf install python3-tkinter (Fedora)")
+                    hint = ("\n[TheDawg] Tkinter ships separately from Python on most distros. "
+                            "Install it on this machine:\n"
+                            "  " + (install_line("tk") or "install the Tk package for your distro") + "\n"
+                            "Elsewhere: sudo apt install python3-tk (Debian/Ubuntu/Kali) · "
+                            "sudo dnf install python3-tkinter (Fedora)")
                 else:
                     hint = "\n[TheDawg] A required module is missing — see the traceback above."
             elif any(s in early_err for s in ("cannot open display", "no display name",
@@ -2998,36 +3242,125 @@ def polish_round(code, messages, provider_id=None):
 # ==========================================================================
 # http
 # ==========================================================================
+# Static files (the UI, icons, sounds) are read once and held in memory, keyed by
+# (path, mtime, size). The UI is ~90 KB of HTML; re-reading and re-sending it
+# uncompressed on every load was the single slowest thing about opening TheDawg.
+_STATIC_CACHE = {}
+_STATIC_LOCK = threading.Lock()
+_GZIP_MIN = 1024          # below this, compression costs more than it saves
+
+
+def _read_static(path):
+    """Cached file read. Returns (bytes, etag) or (None, None) if missing."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None, None
+    key = (path, st.st_mtime_ns, st.st_size)
+    with _STATIC_LOCK:
+        hit = _STATIC_CACHE.get(path)
+        if hit and hit[0] == key:
+            return hit[1], hit[2]
+    try:
+        with open(path, "rb") as f:
+            blob = f.read()
+    except OSError:
+        return None, None
+    etag = '"%x-%x"' % (st.st_mtime_ns, st.st_size)
+    gz = None
+    if len(blob) >= _GZIP_MIN:
+        try:
+            import gzip as _gz
+            cand = _gz.compress(blob, 6)
+            if len(cand) < len(blob) * 0.92:
+                gz = cand
+        except Exception:
+            gz = None
+    with _STATIC_LOCK:
+        _STATIC_CACHE[path] = (key, blob, etag, gz)
+    return blob, etag
+
+
+def _static_gzip(path):
+    with _STATIC_LOCK:
+        hit = _STATIC_CACHE.get(path)
+    return hit[3] if hit else None
+
+
 class Handler(BaseHTTPRequestHandler):
+    # HTTP/1.1 keeps the connection alive between requests. The UI fires a burst of
+    # small API calls on load; on HTTP/1.0 each one paid a fresh TCP handshake.
+    protocol_version = "HTTP/1.1"
+    # every response sets Content-Length, so keep-alive is safe
+    server_version = "TheDawg"
+    sys_version = ""
+
     def log_message(self, *a):  # quiet
         pass
 
-    def _send(self, code, body, ctype="application/json"):
+    def _accepts_gzip(self):
+        return "gzip" in (self.headers.get("Accept-Encoding") or "")
+
+    def _send(self, code, body, ctype="application/json", extra=None, gz=None):
         if isinstance(body, (dict, list)):
-            body = json.dumps(body).encode()
+            body = json.dumps(body, separators=(",", ":")).encode()
         elif isinstance(body, str):
             body = body.encode()
+        encoding = None
+        if gz is not None and self._accepts_gzip():
+            body, encoding = gz, "gzip"
+        elif len(body) >= _GZIP_MIN and self._accepts_gzip() and (
+                ctype.startswith("text/") or "json" in ctype or "svg" in ctype):
+            try:
+                import gzip as _gz
+                cand = _gz.compress(body, 5)
+                if len(cand) < len(body) * 0.92:
+                    body, encoding = cand, "gzip"
+            except Exception:
+                pass
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        if encoding:
+            self.send_header("Content-Encoding", encoding)
+            self.send_header("Vary", "Accept-Encoding")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
-
-    def _file(self, path, ctype):
         try:
-            with open(path, "rb") as f:
-                self._send(200, f.read(), ctype)
-        except FileNotFoundError:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _file(self, path, ctype, cache="no-cache"):
+        blob, etag = _read_static(path)
+        if blob is None:
             self._send(404, {"error": "not found"})
+            return
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self._send(200, blob, ctype,
+                   extra={"ETag": etag, "Cache-Control": cache},
+                   gz=_static_gzip(path))
 
     def do_GET(self):
+        # Strip the query string before routing. Every branch below compares
+        # against a bare path, so a single "?native=1" was enough to 404 the
+        # whole app — which is exactly what the native shell appends.
+        self.path = self.path.split("?", 1)[0] or "/"
         if self.path in ("/", "/index.html"):
             self._file(os.path.join(HERE, "ui", "index.html"), "text/html; charset=utf-8")
         elif self.path.startswith("/assets/"):
             name = os.path.basename(self.path)
             ext = name.rsplit(".", 1)[-1].lower()
-            ctype = {"svg": "image/svg+xml", "png": "image/png"}.get(ext, "application/octet-stream")
-            self._file(os.path.join(HERE, "assets", name), ctype)
+            ctype = {"svg": "image/svg+xml", "png": "image/png", "webp": "image/webp",
+                     "jpg": "image/jpeg", "jpeg": "image/jpeg", "ico": "image/x-icon",
+                     "woff2": "font/woff2"}.get(ext, "application/octet-stream")
+            self._file(os.path.join(HERE, "assets", name), ctype, cache="public, max-age=86400")
         elif self.path.startswith("/sounds/"):
             # serve any audio file the user dropped in the sounds/ directory.
             # supports mp3, wav, ogg, m4a, flac — whatever the browser can play.
@@ -3048,7 +3381,17 @@ class Handler(BaseHTTPRequestHandler):
             full = os.path.join(HERE, "sounds", name)
             if not os.path.isfile(full):
                 self._send(404, {"error": "no such sound"}); return
-            self._file(full, ctype)
+            self._file(full, ctype, cache="public, max-age=86400")
+        elif self.path.startswith("/vendor/"):
+            name = os.path.basename(self.path)
+            if "/" in name or "\\" in name or name.startswith("."):
+                self._send(404, {"error": "not found"}); return
+            ext = name.rsplit(".", 1)[-1].lower()
+            ctype = {"js": "text/javascript; charset=utf-8", "css": "text/css; charset=utf-8",
+                     "woff2": "font/woff2", "woff": "font/woff",
+                     "ttf": "font/ttf", "svg": "image/svg+xml"}.get(ext, "application/octet-stream")
+            self._file(os.path.join(HERE, "ui", "vendor", name), ctype,
+                       cache="public, max-age=604800, immutable")
         elif self.path == "/api/sounds":
             # tell the UI which trigger files actually exist, so it knows what to play.
             # The UI looks for these filenames in HERE/sounds/:
@@ -3086,6 +3429,9 @@ class Handler(BaseHTTPRequestHandler):
                 "autotest": AUTOTEST_MAX_ROUNDS,
                 "version": __version__,
                 "desktop": detect_desktop_env(),
+                "distro": DISTRO,
+                "native": NATIVE_SHELL.get("active", False),
+                "shell": NATIVE_SHELL.get("kind", ""),
             })
         elif self.path == "/api/log":
             self._send(200, {"log": render_log(full=True), "runs": len(SESSION_LOG)})
@@ -3103,16 +3449,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(blob)))
             self.end_headers()
             self.wfile.write(blob)
-        elif self.path.split("?")[0] == "/api/shot.png":
+        elif self.path == "/api/shot.png":
             # latest runtime-probe screenshot (UI cache-busts with ?t=...)
             if os.path.exists(SHOT_PATH):
-                self._file(SHOT_PATH, "image/png")
+                self._file(SHOT_PATH, "image/png", cache="no-store")
             else:
                 self._send(404, {"error": "no screenshot yet"})
         else:
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        self.path = self.path.split("?", 1)[0] or "/"
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b"{}"
         try:
@@ -3262,7 +3609,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/platform":
             self._send(200, {"os": platform.system(), "python": platform.python_version(),
                              "is_win": IS_WIN, "is_mac": IS_MAC, "is_linux": IS_LINUX,
-                             "desktop": detect_desktop_env()})
+                             "desktop": detect_desktop_env(), "distro": DISTRO,
+                             "cpus": cpu_threads()})
         elif self.path == "/api/polish":
             convo = data.get("messages", [])
             self._send(200, polish_round(data.get("code", ""), convo, data.get("provider")))
@@ -3282,17 +3630,27 @@ class Handler(BaseHTTPRequestHandler):
 def free_port(host, start):
     for p in range(start, start + 40):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.15)
             if s.connect_ex((host, p)) != 0:
                 return p
     return start
 
-def launch_app_window(url):
-    """Open TheDawg in a Chromium-family app window (no browser chrome).
-    Falls back to a normal browser tab if no Chromium-family browser is found.
-    Searches the right places on Windows, macOS, and Linux."""
+
+# ==========================================================================
+# FRONT DOOR  -- how TheDawg actually appears on your desktop
+# ==========================================================================
+# Preference order:
+#   1. NATIVE: a GTK4 + libadwaita window owning a WebKitGTK view (shell.py).
+#      One process, real titlebar, real app_id, no browser profile on disk.
+#   2. Chromium `--app=` window, if the native bindings aren't installed.
+#   3. A plain browser tab, as a last resort.
+NATIVE_SHELL = {"active": False, "kind": "", "reason": ""}
+
+
+def launch_browser_window(url):
+    """Fallback front door: a Chromium-family app window, else an ordinary tab."""
     candidates = []
     if IS_WIN:
-        # common install locations on Windows (Program Files + LocalAppData per-user installs)
         candidates = [
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
@@ -3309,9 +3667,8 @@ def launch_app_window(url):
             "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
         ]
     else:
-        # Linux: rely on PATH lookups for the binaries
-        for binname in ("chromium", "chromium-browser", "google-chrome",
-                        "google-chrome-stable", "brave-browser", "microsoft-edge", "vivaldi"):
+        for binname in ("brave-browser", "brave", "chromium", "chromium-browser",
+                        "google-chrome-stable", "google-chrome", "microsoft-edge", "vivaldi"):
             p = shutil.which(binname)
             if p:
                 candidates.append(p)
@@ -3320,7 +3677,6 @@ def launch_app_window(url):
     for path in candidates:
         if not path:
             continue
-        # PATH-relative names → resolve them; absolute paths must exist
         resolved = path if os.path.isabs(path) else shutil.which(path)
         if not resolved or not os.path.exists(resolved):
             continue
@@ -3328,40 +3684,170 @@ def launch_app_window(url):
             argv = [resolved, f"--app={url}",
                     f"--user-data-dir={app_data}",
                     "--no-first-run", "--no-default-browser-check",
-                    # let TheDawg play its startup sound without needing a user gesture first.
-                    # Chromium-family flag — safe on Chrome / Edge / Brave / Vivaldi / Chromium.
                     "--autoplay-policy=no-user-gesture-required",
-                    "--window-size=1280,860"]
-            # On Linux, set the window's WM class / Wayland app_id to "thedawg" so it
-            # matches StartupWMClass in the .desktop entry. Without this the running
-            # window shows a generic Chromium icon in the KDE Plasma task switcher and
-            # the GNOME/other desktop overview instead of the Dawg icon.
+                    "--window-size=1360,900"]
             if IS_LINUX:
+                # matches StartupWMClass in the .desktop entry, so the task
+                # switcher shows the Dawg and not a generic browser icon
                 argv.insert(1, "--class=thedawg")
-            subprocess.Popen(
-                argv,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if (detect_desktop_env().get("session") == "wayland"
+                        and os.environ.get("THEDAWG_X11") != "1"):
+                    argv.insert(1, "--ozone-platform-hint=auto")
+            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return os.path.basename(resolved)
         except Exception:
             continue
-    # fallback: ordinary browser tab via webbrowser (handles every OS)
     try:
         webbrowser.open(url)
     except Exception:
         pass
     return None
 
+
+# kept as an alias so older launchers / scripts calling this still work
+launch_app_window = launch_browser_window
+
+
+# ==========================================================================
+# DOCTOR  -- one command that tells you exactly what to install, in YOUR
+# distro's package names. `thedawg --doctor`
+# ==========================================================================
+def doctor():
+    de = detect_desktop_env()
+    print(f"\n  TheDawg v{__version__}  ·  environment check")
+    print(f"  {'-' * 62}")
+    print(f"  distro      : {DISTRO['pretty']}  ({DISTRO['family']} family)")
+    print(f"  desktop     : {de['raw'] or de['de']} on {de['session']}")
+    print(f"  python      : {platform.python_version()}  ({sys.executable})")
+    print(f"  cpu threads : {cpu_threads()}")
+    if is_cachy():
+        print("  cachyos     : yes — using the optimised toolchain paths")
+    print()
+
+    rows = []
+
+    # native shell
+    try:
+        sys.path.insert(0, HERE)
+        import shell as _shell
+        ok = _shell.available()
+        rows.append(("native app window (GTK4 + WebKitGTK)", ok,
+                     "" if ok else _shell.missing_reason(),
+                     install_line("pygobject", "gtk4", "libadwaita", "webkitgtk6")))
+    except Exception as e:
+        rows.append(("native app window (GTK4 + WebKitGTK)", False, str(e),
+                     install_line("pygobject", "gtk4", "libadwaita", "webkitgtk6")))
+
+    # self-test stack
+    rows.append(("self-test: headless display (Xvfb)", bool(shutil.which("Xvfb")), "",
+                 install_line("xvfb")))
+    rows.append(("self-test: synthetic input (xdotool)", bool(shutil.which("xdotool")), "",
+                 install_line("xdotool")))
+    rows.append(("self-test: screen capture", bool(shutil.which("import") or shutil.which("magick")
+                                                   or shutil.which("maim") or shutil.which("scrot")), "",
+                 install_line("imagemagick")))
+    try:
+        import PIL  # noqa: F401
+        pil_ok = True
+    except Exception:
+        pil_ok = False
+    rows.append(("self-test: screenshot analysis (Pillow)", pil_ok, "", install_line("pillow")))
+
+    # build + lint
+    rows.append(("single-file builds (PyInstaller)", bool(shutil.which("pyinstaller")), "",
+                 install_line("pyinstaller") + "   # or: pip install pyinstaller"))
+    rows.append(("fast lint/autofix (ruff)", bool(_ruff_path()), "",
+                 install_line("ruff") + "   # or: pip install ruff"))
+    rows.append(("git (for the GitHub release flow)", bool(shutil.which("git")), "",
+                 (DISTRO["install"] + " git") if DISTRO["install"] else "install git"))
+
+    missing = []
+    for label, ok, why, fix in rows:
+        mark = "\u2713" if ok else "\u2717"
+        note = "" if ok else (f"  — {why}" if why else "")
+        print(f"   {mark}  {label}{note}")
+        if not ok and fix:
+            missing.append(fix)
+
+    print()
+    if missing:
+        print("  to fix everything above:\n")
+        # collapse the ones that share a package manager into a single line
+        pm = DISTRO["install"]
+        pkgs, extra = [], []
+        for line in missing:
+            if pm and line.startswith(pm):
+                pkgs.extend(line[len(pm):].split("#")[0].split())
+                if "#" in line:
+                    extra.append("  " + line.split("#", 1)[1].strip())
+            else:
+                extra.append("  " + line)
+        seen, uniq = set(), []
+        for p in pkgs:
+            if p not in seen:
+                seen.add(p); uniq.append(p)
+        if uniq:
+            print(f"    {pm} {' '.join(uniq)}")
+        for e in extra:
+            print(f"  {e}")
+    else:
+        print("  everything TheDawg can use is installed. nice.")
+
+    keys = [PROVIDERS[p]["label"] for p in PROVIDERS if STATE["keys"].get(p)]
+    print(f"\n  api keys    : {', '.join(keys) if keys else 'none yet — add one in Settings'}")
+    print()
+
+
 def main():
-    port = free_port(HOST, PORT)
+    argv = sys.argv[1:]
+    if "--doctor" in argv or "--check" in argv:
+        doctor(); return
+    if "--version" in argv or "-V" in argv:
+        print(f"TheDawg {__version__}"); return
+    if "--help" in argv or "-h" in argv:
+        print(f"""
+  TheDawg {__version__} — AI Python toolsmith for the Linux desktop
+
+    thedawg                 launch (native window if available)
+    thedawg --browser       force the browser front door instead
+    thedawg --doctor        check this machine and print exact install commands
+    thedawg --safe-gfx      disable the WebKit dmabuf renderer (blank/black window fix)
+    thedawg --dev           open with developer tools
+    thedawg --port N        start looking for a free port at N
+    thedawg --version
+""")
+        return
+
+    dev = "--dev" in argv
+    force_browser = "--browser" in argv or "--no-native" in argv
+    if "--safe-gfx" in argv or os.environ.get("THEDAWG_SAFE_GFX") == "1":
+        # some Mesa/NVIDIA combinations render a WebKitGTK view black until the
+        # dmabuf path is turned off. Must be set before WebKit spawns.
+        os.environ["WEBKIT_DISABLE_DMABUF_RENDERER"] = "1"
+        os.environ["WEBKIT_DISABLE_COMPOSITING_MODE"] = "1"
+
+    start_port = PORT
+    if "--port" in argv:
+        try:
+            start_port = int(argv[argv.index("--port") + 1])
+        except Exception:
+            pass
+
+    port = free_port(HOST, start_port)
     url = f"http://{HOST}:{port}"
+
+    ThreadingHTTPServer.daemon_threads = True
+    ThreadingHTTPServer.request_queue_size = 64
+    # small responses shouldn't wait on Nagle's algorithm — this is a loopback UI
+    ThreadingHTTPServer.disable_nagle_algorithm = True
     srv = ThreadingHTTPServer((HOST, port), Handler)
+
     print(f"\n  TheDawg v{__version__}  —  {url}")
-    print(f"  Linux Python toolsmith  ·  running on {platform.system()}")
+    print(f"  {DISTRO['pretty']}  ·  {detect_desktop_env()['raw'] or 'desktop'} "
+          f"on {detect_desktop_env()['session']}")
     have = [PROVIDERS[pid]["label"] for pid in PROVIDERS if STATE["keys"].get(pid)]
     if have:
         print(f"  keys loaded for: {', '.join(have)}")
-        # fetch each keyed provider's live model catalog in the background so the
-        # dropdown is accurate without blocking startup
         def _warm():
             for pid in PROVIDERS:
                 if STATE["keys"].get(pid):
@@ -3371,18 +3857,56 @@ def main():
         print("  no API keys yet — add one in Settings")
     print(f"  active provider: {PROVIDERS[STATE['provider']]['label']}")
     print(f"  auto-test: up to {AUTOTEST_MAX_ROUNDS} silent fix rounds")
-    print("  serving local-only. ctrl-c to stop.\n")
-    used = launch_app_window(url)
+
+    # serve in the background so the GTK main loop can own the main thread
+    threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.5},
+                     daemon=True).start()
+
+    native = None
+    if IS_LINUX and not force_browser:
+        try:
+            sys.path.insert(0, HERE)
+            import shell as native_shell
+            if native_shell.available():
+                native = native_shell
+            else:
+                NATIVE_SHELL["reason"] = native_shell.missing_reason()
+        except Exception as e:
+            NATIVE_SHELL["reason"] = str(e)
+
+    if native:
+        NATIVE_SHELL.update({"active": True, "kind": "gtk4-webkit"})
+        print("  window: native GTK4 + WebKitGTK")
+        print("  serving local-only. close the window or ctrl-c to stop.\n")
+        try:
+            native.run(url,
+                       config_dir=str(config_dir()),
+                       data_dir=str(app_data_dir()),
+                       icon_dir=os.path.join(HERE, "assets"),
+                       on_quit=lambda: None,
+                       dev=dev)
+        except KeyboardInterrupt:
+            pass
+        print("\n  forge banked. later, dawg.\n")
+        os._exit(0)
+
+    if NATIVE_SHELL.get("reason") and IS_LINUX and not force_browser:
+        print(f"  native window unavailable ({NATIVE_SHELL['reason']})")
+        print(f"  install it:  {install_line('pygobject', 'gtk4', 'libadwaita', 'webkitgtk6')}")
+    used = launch_browser_window(url)
+    NATIVE_SHELL.update({"active": False, "kind": used or "browser"})
     if used:
-        print(f"  opened in app window via {used}")
+        print(f"  window: {used} app mode")
     else:
-        print("  no Chromium-family browser found — opened a normal tab\n"
-              "  (install Chrome/Edge/Brave for the clean app window)")
+        print("  window: plain browser tab")
+    print("  serving local-only. ctrl-c to stop.\n")
     try:
-        srv.serve_forever()
+        while True:
+            time.sleep(3600)
     except KeyboardInterrupt:
         print("\n  forge banked. later, dawg.\n")
         srv.shutdown()
+
 
 if __name__ == "__main__":
     main()

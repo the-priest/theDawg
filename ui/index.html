@@ -5,9 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TheDawg — Linux toolsmith</title>
 <link rel="icon" href="/assets/icon.svg">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<meta name="color-scheme" content="dark">
+<meta name="referrer" content="no-referrer">
+<!-- Zero external requests: system fonts + a purpose-built Python highlighter.
+     TheDawg is a local tool; it should open instantly with the network unplugged. -->
+<script>
+/* Runs before CSS paints. `?native=1` is added by the GTK4 shell, which brings its
+   own titlebar — without this the in-page imitation would flash and then vanish. */
+(function(){
+  try{
+    var p = new URLSearchParams(location.search);
+    if(p.get("native") === "1") document.documentElement.classList.add("native");
+  }catch(e){}
+})();
+</script>
 <style>
   :root{
     --bg:#0c0e0f; --bg2:#101315; --panel:#15191b; --panel2:#1a1f22;
@@ -15,9 +26,50 @@
     --ink:#e7eaeb; --dim:#8a9398; --faint:#6d767c; --steel:#c7ced2;
     --amber:#e8a33d; --ember:#e07a3a; --lime:#9fe04a; --cyan:#46c7d4; --red:#e0594a;
     --mag:#c79be0;
-    --mono:"JetBrains Mono",ui-monospace,monospace;
-    --ui:"Sora",system-ui,sans-serif;
+    /* Fonts come from the system. On CachyOS:
+         sudo pacman -S --needed ttf-jetbrains-mono inter-font
+       Everything degrades sanely if neither is present. */
+    --mono:"JetBrains Mono","JetBrainsMono Nerd Font","Fira Code","Cascadia Code",
+           "Source Code Pro","Liberation Mono","DejaVu Sans Mono",ui-monospace,monospace;
+    --ui:"Inter","Inter Variable",system-ui,-apple-system,"Cantarell","Noto Sans",
+         "Liberation Sans","DejaVu Sans",sans-serif;
+
+    /* one radius + shadow scale, so nothing is arbitrary */
+    --r1:6px; --r2:9px; --r3:13px;
+    --sh1:0 1px 2px rgba(0,0,0,.35);
+    --sh2:0 6px 20px -6px rgba(0,0,0,.55);
+    --sh3:0 18px 46px -12px rgba(0,0,0,.7);
+    --ring:0 0 0 2px rgba(232,163,61,.55);
+    --ease:cubic-bezier(.2,.7,.3,1);
   }
+
+  /* Keyboard users get a real focus ring everywhere, once, instead of
+     per-component guesswork. Mouse clicks stay clean. */
+  :focus-visible{outline:none;box-shadow:var(--ring);border-radius:var(--r1)}
+
+  /* Scrollbars that belong to this window rather than to 1998. */
+  *{scrollbar-width:thin;scrollbar-color:#31393e transparent}
+  *::-webkit-scrollbar{width:10px;height:10px}
+  *::-webkit-scrollbar-track{background:transparent}
+  *::-webkit-scrollbar-thumb{background:#2b3236;border-radius:8px;border:2px solid transparent;
+    background-clip:content-box}
+  *::-webkit-scrollbar-thumb:hover{background:#3d474d;background-clip:content-box}
+
+  /* NATIVE MODE — set by ?native=1 when running inside the GTK4 shell, which
+     supplies a real titlebar. The in-page imitation is removed, not just hidden,
+     so the grid reclaims its 34px. */
+  html.native .titlebar{display:none}
+  html.native .app{grid-template-rows:54px 30px 1fr}
+
+  /* Motion is opt-in. The ambient layers are pretty but they repaint forever;
+     honour the system setting, and see the visibility handler in JS which pauses
+     them whenever the window isn't on screen. */
+  @media (prefers-reduced-motion: reduce){
+    *,*::before,*::after{animation-duration:.001ms !important;animation-iteration-count:1 !important;
+      transition-duration:.001ms !important}
+  }
+  html.idle .bg-fx *{animation-play-state:paused !important}
+  html.idle .tb-status{animation-play-state:paused !important}
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   /* Interface-size scaling is applied as `zoom` on <html> (the document root) in JS.
@@ -39,22 +91,32 @@
 
   /* South Park-style snowy mountain-town background (faded so the UI stays readable) */
   .bg-fx{position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none}
-  .bg-town{position:absolute;inset:0;width:100%;height:100%;
-    opacity:.085;animation:townbreathe 18s ease-in-out infinite}
-  @keyframes townbreathe{0%,100%{opacity:.07}50%{opacity:.11}}
+  /* The town photo sits behind everything at low opacity. It is deliberately
+     desaturated and darkened: full-strength cartoon colour behind a code pane
+     is unreadable, and this has to work as a backdrop, not a wallpaper. */
+  .bg-town{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+    object-position:50% 60%;opacity:.9;filter:saturate(.95) brightness(.95);
+    animation:townbreathe 24s ease-in-out infinite}
+  @keyframes townbreathe{0%,100%{opacity:.86}50%{opacity:.95}}
+  .bg-fx picture{position:absolute;inset:0;display:block}
+  .bg-snow{position:absolute;inset:0;width:100%;height:100%}
+  /* a warm vignette pulls the eye back to the centre and keeps the corners quiet */
+  .bg-fx::after{content:"";position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(135% 100% at 50% 48%,transparent 55%,rgba(8,10,11,.3) 88%,rgba(8,10,11,.5) 100%)}
   /* gently drifting snow — three parallax layers, seamless vertical loop */
-  .snow{animation:snowfall linear infinite}
+  .snow{animation:snowfall linear infinite;will-change:transform}
   .snow-a{animation-duration:27s}
   .snow-b{animation-duration:19s}
   .snow-c{animation-duration:13s}
   @keyframes snowfall{from{transform:translateY(0)}to{transform:translateY(800px)}}
-  .bg-scan{position:absolute;inset:0;background:repeating-linear-gradient(
-    0deg,transparent 0 3px,rgba(0,0,0,.18) 3px 4px);mix-blend-mode:multiply;opacity:.2}
+  .bg-scan{position:absolute;inset:0;opacity:.16;background:repeating-linear-gradient(
+    0deg,transparent 0 3px,rgba(0,0,0,.55) 3px 4px)}
 
   /* titlebar */
   .titlebar{display:flex;align-items:center;gap:12px;padding:0 12px;
     background:linear-gradient(180deg,#0f1416,#0a0d0e);border-bottom:1px solid var(--line);
-    user-select:none;position:relative;z-index:6}
+    user-select:none;position:relative;z-index:6;-webkit-app-region:drag}
+  .titlebar .tl,.titlebar .tb-right{-webkit-app-region:no-drag}
   .tb-traffic{display:flex;gap:8px}
   .tl{width:12px;height:12px;border-radius:50%;cursor:pointer;border:1px solid #0006;transition:.12s}
   .tl-close{background:#e0594a}.tl-close:hover{filter:brightness(1.25);box-shadow:0 0 8px #e0594a}
@@ -75,17 +137,26 @@
 
   /* top bar */
   .top{display:flex;align-items:center;gap:14px;padding:0 16px;
-    background:linear-gradient(180deg,#171c1f,#11161800);
-    border-bottom:1px solid var(--line);z-index:5}
+    background:linear-gradient(180deg,rgba(23,28,31,.94),rgba(17,22,24,.6));
+    backdrop-filter:blur(12px);border-bottom:1px solid var(--line);z-index:5}
   .logo{display:flex;align-items:center;gap:11px}
-  .logo img{width:28px;height:28px;border-radius:7px;
-    box-shadow:0 0 0 1px #0006, 0 4px 14px rgba(224,122,58,.18)}
-  .logo .name{font-weight:700;letter-spacing:.02em;font-size:16px}
+  .logo img{width:28px;height:28px;border-radius:var(--r2);
+    box-shadow:0 0 0 1px #0006, 0 4px 14px rgba(224,122,58,.22)}
+  .logo .name{font-weight:650;letter-spacing:-.015em;font-size:16.5px}
   .logo .name b{color:var(--amber)}
-  .tool-chip{display:flex;align-items:center;gap:9px;padding:5px 11px;border-radius:8px;
+  .tool-chip{display:flex;align-items:center;gap:9px;padding:5px 11px;border-radius:var(--r2);
     background:var(--panel);border:1px solid var(--line);font-family:var(--mono);font-size:12px;
-    cursor:pointer;transition:border-color .15s,background .15s}
-  .tool-chip:hover{border-color:var(--amber);background:rgba(232,163,61,.06)}
+    cursor:pointer;transition:border-color .15s var(--ease),background .15s var(--ease),
+    box-shadow .15s var(--ease)}
+  .tool-chip:hover{border-color:var(--amber);background:rgba(232,163,61,.07);box-shadow:var(--sh1)}
+
+  /* which machine TheDawg thinks it is building for — it changes the package
+     manager it teaches the model to use, so it is worth showing */
+  .host-chip{display:flex;align-items:center;gap:6px;padding:4px 9px;border-radius:var(--r1);
+    background:rgba(70,199,212,.08);border:1px solid rgba(70,199,212,.22);
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;color:#8fd7de;white-space:nowrap}
+  .host-chip .hc-sep{opacity:.45}
+  .host-chip.cachy{background:rgba(159,224,74,.09);border-color:rgba(159,224,74,.26);color:#bfe98a}
   .tool-chip .fn{color:var(--steel)}
   .tool-chip.locked .fn{color:var(--ink)}
   .tool-chip.locked .fn::after{content:"🔒";font-size:9px;margin-left:5px;opacity:.55}
@@ -108,23 +179,31 @@
   .model-pill #modelName{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .model-pill .dot{width:7px;height:7px;border-radius:50%;background:var(--faint)}
   .model-pill .dot.on{background:var(--lime);box-shadow:0 0 7px var(--lime)}
-  .provider-pick{background:var(--panel);border:1px solid var(--line);border-radius:8px;color:var(--ink);
-    font-family:var(--ui);font-size:12px;padding:6px 9px;cursor:pointer;outline:none}
+  .provider-pick{background:var(--panel);border:1px solid var(--line);border-radius:var(--r2);color:var(--ink);
+    font-family:var(--ui);font-size:12px;padding:6px 9px;cursor:pointer;outline:none;
+    transition:border-color .13s var(--ease)}
   .provider-pick:hover{border-color:var(--amber)}
-  .icon-btn{background:var(--panel);border:1px solid var(--line);border-radius:8px;color:var(--dim);
-    width:34px;height:34px;cursor:pointer;font-size:15px;transition:.13s;display:grid;place-items:center}
-  .icon-btn:hover{color:var(--ink);border-color:var(--amber)}
+  .icon-btn{background:var(--panel);border:1px solid var(--line);border-radius:var(--r2);color:var(--dim);
+    width:34px;height:34px;cursor:pointer;font-size:15px;display:grid;place-items:center;
+    transition:color .13s var(--ease),border-color .13s var(--ease),
+    background .13s var(--ease),transform .09s var(--ease)}
+  .icon-btn:hover{color:var(--ink);border-color:var(--amber);background:rgba(232,163,61,.06)}
+  .icon-btn:active{transform:translateY(1px)}
 
   /* step rail — the agree → test → iterate → release flow, always visible */
   .steprail{display:flex;align-items:center;gap:8px;padding:0 16px;z-index:4;
-    background:linear-gradient(180deg,#0f1416,#0c0f1000);border-bottom:1px solid var(--line)}
+    background:linear-gradient(180deg,rgba(15,20,22,.92),rgba(12,15,16,.55));
+    backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  .steprail .sep{transition:background .3s var(--ease)}
+  .steprail .step.done+.sep{background:rgba(159,224,74,.4)}
   .steprail .step{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10px;
     letter-spacing:.13em;text-transform:uppercase;color:var(--faint);transition:.22s}
   .steprail .step i{display:grid;place-items:center;width:16px;height:16px;border-radius:50%;
     border:1px solid var(--line);font-style:normal;font-size:9px;font-weight:700;color:var(--faint);
     background:var(--panel);transition:.22s}
   .steprail .step.on{color:var(--amber)}
-  .steprail .step.on i{border-color:var(--amber);color:#1c1407;background:var(--amber)}
+  .steprail .step.on i{border-color:var(--amber);color:#1c1407;background:var(--amber);
+    box-shadow:0 0 0 3px rgba(232,163,61,.16),0 0 12px rgba(232,163,61,.35)}
   .steprail .step.done{color:var(--lime)}
   .steprail .step.done i{border-color:var(--lime);color:#11210a;background:var(--lime)}
   .steprail .sep{flex:0 1 26px;height:1px;background:var(--line)}
@@ -137,8 +216,12 @@
   .main>*{min-width:0;min-height:0}
 
   /* dialogue column */
+  /* Panels are translucent so the town shows through, but each one keeps a
+     backdrop blur behind it — that's what lets the backdrop stay visible without
+     making 12px monospace unreadable on top of a cartoon sky. */
   .dialogue{display:flex;flex-direction:column;min-height:0;
-    background:linear-gradient(180deg,var(--bg2),var(--bg));border-right:1px solid var(--line)}
+    background:linear-gradient(180deg,rgba(16,19,21,.78),rgba(12,14,15,.88));
+    backdrop-filter:blur(18px) saturate(.85);border-right:1px solid var(--line)}
   .dlg-h{padding:12px 16px 8px;display:flex;align-items:center;justify-content:space-between}
   .dlg-h .t{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--faint);text-transform:uppercase}
   .dlg-h .new{font-size:11px;color:var(--dim);cursor:pointer}
@@ -153,8 +236,9 @@
   .msg .who::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor}
   .bubble{font-size:14.5px;line-height:1.62;color:var(--ink);white-space:pre-wrap;word-wrap:break-word}
   .msg.you .bubble{color:var(--steel)}
-  .msg.smith .bubble{background:var(--panel);border:1px solid var(--line2);border-left:2px solid var(--amber);
-    border-radius:8px;padding:10px 12px}
+  .msg.smith .bubble{background:linear-gradient(180deg,rgba(26,31,34,.9),rgba(21,25,27,.9));
+    border:1px solid var(--line2);border-left:2px solid var(--amber);
+    border-radius:var(--r2);padding:11px 13px;box-shadow:var(--sh1)}
   .codeflag{margin-top:7px;font-family:var(--mono);font-size:11px;color:var(--lime);
     display:flex;align-items:center;gap:6px}
   .codeflag::before{content:"\27a4";color:var(--faint)}
@@ -164,9 +248,13 @@
   .iq{margin-bottom:12px}
   .iq-q{font-size:12.5px;color:var(--ink);margin-bottom:6px}
   .iq-opts{display:flex;flex-wrap:wrap;gap:6px}
-  .iq-opt{font-family:var(--ui);font-size:12px;color:var(--dim);background:var(--bg);
-    border:1px solid var(--line);border-radius:7px;padding:6px 11px;cursor:pointer;transition:.12s}
-  .iq-opt:hover{border-color:var(--amber);color:var(--ink)}
+  .iq-opt{font-family:var(--ui);font-size:12px;color:var(--dim);background:rgba(12,14,15,.8);
+    border:1px solid var(--line);border-radius:var(--r2);padding:6px 11px;cursor:pointer;
+    transition:border-color .12s var(--ease),color .12s var(--ease),
+      background .12s var(--ease),transform .08s var(--ease)}
+  .iq-opt:hover:not(:disabled){border-color:var(--amber);color:var(--ink);
+    background:rgba(232,163,61,.08)}
+  .iq-opt:active:not(:disabled){transform:translateY(1px)}
   .iq-opt.on{background:var(--amber);color:#1c1407;border-color:var(--amber);font-weight:600}
   .iq-opt:disabled{opacity:.6;cursor:default}
   .intake-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
@@ -178,19 +266,57 @@
   .sparks i:nth-child(2){animation-delay:.15s}.sparks i:nth-child(3){animation-delay:.3s}
   @keyframes spark{0%,100%{opacity:.25;transform:translateY(0)}50%{opacity:1;transform:translateY(-3px)}}
 
-  .composer{padding:12px 16px 16px;border-top:1px solid var(--line)}
-  .composer .box{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:8px;transition:.15s}
-  .composer .box:focus-within{border-color:var(--amber);box-shadow:0 0 0 3px rgba(232,163,61,.08)}
+  .composer{padding:12px 16px 16px;border-top:1px solid var(--line);
+    background:rgba(12,14,15,.62);backdrop-filter:blur(18px)}
+  .composer .box{background:rgba(21,25,27,.92);border:1px solid var(--line);border-radius:var(--r3);
+    padding:9px;box-shadow:var(--sh1);
+    transition:border-color .15s var(--ease),box-shadow .15s var(--ease)}
+  .composer .box:focus-within{border-color:var(--amber);
+    box-shadow:0 0 0 3px rgba(232,163,61,.1),var(--sh2)}
   .composer textarea{width:100%;border:none;background:none;color:var(--ink);font-family:var(--ui);
     font-size:13.5px;resize:none;outline:none;line-height:1.5;max-height:140px}
   .composer textarea::placeholder{color:var(--faint)}
-  .composer .row{display:flex;align-items:center;justify-content:space-between;margin-top:6px}
-  .composer .hint{font-family:var(--mono);font-size:10px;color:var(--faint)}
-  .send{background:var(--amber);color:#1c1407;border:none;border-radius:8px;padding:7px 14px;
-    font-family:var(--ui);font-weight:700;font-size:13px;cursor:pointer;transition:.13s;display:flex;align-items:center;gap:6px}
-  .send:hover{filter:brightness(1.08)}
-  .send:disabled{opacity:.4;cursor:default}
-  .composer-acts{display:flex;align-items:center;gap:8px}
+  .composer .row{display:flex;align-items:center;justify-content:space-between;
+    gap:10px;margin-top:8px}
+  .composer .hint{font-family:var(--mono);font-size:10px;color:var(--faint);
+    min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* SEND is the one place the whole UI is allowed to shout. Everything else in
+     this window is restrained on purpose so this reads as THE action. */
+  .send{background:none;border:none;padding:0;cursor:pointer;line-height:0;
+    border-radius:var(--r2);display:inline-flex;align-items:center;
+    transform-origin:100% 50%;
+    filter:drop-shadow(0 3px 10px rgba(0,0,0,.55));
+    transition:transform .14s var(--ease),filter .14s var(--ease)}
+  .send img{width:116px;height:auto;display:block;pointer-events:none;
+    -webkit-user-drag:none;user-select:none}
+  /* no artwork on disk (a fresh clone — it's gitignored): fall back to a plain
+     amber button rather than a broken-image icon */
+  .send-fallback{display:none}
+  .send.noart img{display:none}
+  .send.noart .send-fallback{display:inline-block;background:var(--amber);color:#1c1407;
+    border-radius:var(--r2);padding:8px 15px;font-family:var(--ui);font-weight:700;
+    font-size:13px;line-height:1.1}
+  .send.noart{filter:none}
+  .send.noart:hover{filter:brightness(1.08)}
+  /* likewise, no town: the panels go solid so nothing looks half-finished */
+  html.noart .bg-fx{display:none}
+  html.noart .dialogue{background:linear-gradient(180deg,var(--bg2),var(--bg));backdrop-filter:none}
+  html.noart .codebody,html.noart .codebody:has(.empty),html.noart .console{
+    background:var(--bg);backdrop-filter:none}
+  html.noart .empty::before{display:none}
+  html.noart .empty>*{text-shadow:none}
+  .send:hover{transform:translateY(-1px) scale(1.04);
+    filter:drop-shadow(0 6px 16px rgba(232,163,61,.32)) drop-shadow(0 2px 6px rgba(0,0,0,.5))}
+  .send:active{transform:translateY(1px) scale(.98);
+    filter:drop-shadow(0 2px 6px rgba(0,0,0,.5))}
+  .send:disabled{cursor:default;transform:none;
+    filter:grayscale(.85) brightness(.55) drop-shadow(0 2px 6px rgba(0,0,0,.4))}
+  /* while the model is working, give it a slow pulse so the button reads as busy
+     rather than broken */
+  .send.busy{animation:sendpulse 1.5s ease-in-out infinite}
+  @keyframes sendpulse{0%,100%{filter:grayscale(.7) brightness(.6)}
+    50%{filter:grayscale(.2) brightness(.95) drop-shadow(0 0 12px rgba(232,163,61,.35))}}
+  .composer-acts{display:flex;align-items:center;gap:10px;flex:0 0 auto}
   .attach-btn{background:transparent;border:1px solid var(--line);border-radius:8px;color:var(--dim);
     font-family:var(--ui);font-size:12px;font-weight:600;padding:7px 11px;cursor:pointer;transition:.13s;
     display:inline-flex;align-items:center;gap:6px}
@@ -211,20 +337,28 @@
   .work>*{min-width:0}
   .codewrap,.testwrap{display:flex;flex-direction:column;min-height:0;min-width:0}
   .codewrap{border-bottom:1px solid var(--line)}
-  .wh{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line2);background:var(--bg2);flex-wrap:wrap;min-width:0}
+  .wh{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line2);
+    background:rgba(16,19,21,.9);backdrop-filter:blur(12px);flex-wrap:wrap;min-width:0;
+    position:sticky;top:0;z-index:3}
   .wh .label{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--faint);text-transform:uppercase}
   .wh .fname{font-family:var(--mono);font-size:12px;color:var(--steel)}
   .wh .acts{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
   .act-group{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
   .act-div{width:1px;align-self:stretch;min-height:20px;background:var(--line);margin:0 5px}
-  .btn{background:var(--panel);border:1px solid var(--line);border-radius:8px;color:var(--ink);
-    font-family:var(--ui);font-weight:600;font-size:12.5px;padding:7px 13px;cursor:pointer;
-    transition:.13s;display:inline-flex;align-items:center;gap:7px}
-  .btn:hover{border-color:var(--amber);color:#fff}
-  .btn:disabled{opacity:.35;cursor:default}
+  .btn{background:linear-gradient(180deg,#1b2023,#15191b);border:1px solid var(--line);
+    border-radius:var(--r2);color:var(--ink);font-family:var(--ui);font-weight:600;font-size:12.5px;
+    padding:7px 13px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;
+    box-shadow:var(--sh1),inset 0 1px 0 rgba(255,255,255,.035);
+    transition:border-color .13s var(--ease),color .13s var(--ease),
+      background .13s var(--ease),transform .08s var(--ease),box-shadow .13s var(--ease)}
+  .btn:hover:not(:disabled){border-color:var(--amber);color:#fff;
+    background:linear-gradient(180deg,#22282b,#181d20);box-shadow:var(--sh2)}
+  .btn:active:not(:disabled){transform:translateY(1px);box-shadow:none}
+  .btn:disabled{opacity:.32;cursor:default;box-shadow:none}
   .btn.run{background:linear-gradient(180deg,#f0a948,#e07a3a);color:#1c1206;border-color:#e07a3a;
     box-shadow:0 0 0 1px #0004,0 3px 12px rgba(224,122,58,.25)}
-  .btn.run:hover{filter:brightness(1.07);border-color:#e07a3a;color:#1c1206}
+  .btn.run:hover:not(:disabled){filter:brightness(1.08);border-color:#f0a948;color:#1c1206;
+    box-shadow:0 0 0 1px #0004,0 5px 18px rgba(224,122,58,.4)}
   .btn.stop{background:rgba(224,89,74,.14);border-color:rgba(224,89,74,.45);color:var(--red);font-weight:700}
   .btn.stop:hover{background:rgba(224,89,74,.22);color:#fff;border-color:var(--red)}
   .btn.release{background:rgba(159,224,74,.12);border-color:rgba(159,224,74,.35);color:var(--lime)}
@@ -232,7 +366,7 @@
   .btn.build:not(:disabled):hover{background:rgba(70,199,212,.2);border-color:rgba(70,199,212,.55)}
   .btn.ghost{background:transparent;color:var(--dim)}
   .testbar{display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid var(--line2);
-    background:var(--bg2);flex-wrap:wrap}
+    background:rgba(16,19,21,.9);backdrop-filter:blur(12px);flex-wrap:wrap}
   .testbar .spacer{flex:1}
   .btn.polish{background:linear-gradient(180deg,#b478e6,#8a4fc4);color:#150a22;border-color:#8a4fc4;
     box-shadow:0 0 0 1px #0004,0 3px 12px rgba(138,79,196,.25)}
@@ -240,7 +374,11 @@
   .btn.polish.running{background:linear-gradient(180deg,#e0594a,#b53d30);border-color:#b53d30;color:#fff}
   .polish-status{font-family:var(--mono);font-size:11px;color:var(--mag)}
 
-  .codebody{flex:1;overflow:auto;min-height:0;min-width:0;position:relative}
+  .codebody{flex:1;overflow:auto;min-height:0;min-width:0;position:relative;
+    background:rgba(10,12,13,.88);backdrop-filter:blur(18px) saturate(.8);
+    transition:background .35s var(--ease)}
+  /* nothing forged yet — this is the one moment the backdrop gets to be the view */
+  .codebody:has(.empty){background:rgba(10,12,13,.34);backdrop-filter:blur(4px) saturate(1)}
   pre.code{margin:0;padding:14px 16px 18px;font-family:var(--mono);font-size:12.5px;line-height:1.62;
     counter-reset:ln;tab-size:4}
   pre.code .line{display:block;white-space:pre;padding-left:46px;position:relative;min-height:1.62em}
@@ -256,10 +394,14 @@
   .hljs-attr,.hljs-variable{color:#cdd3d6}
 
   .empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;
-    text-align:center;padding:30px;gap:14px;color:var(--faint)}
+    text-align:center;padding:30px;gap:14px;color:var(--dim);position:relative;isolation:isolate}
+  .empty::before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;
+    background:radial-gradient(62% 58% at 50% 46%,rgba(8,10,11,.9) 0%,rgba(8,10,11,.78) 42%,
+      rgba(8,10,11,.45) 72%,transparent 100%)}
+  .empty>*{text-shadow:0 1px 3px rgba(0,0,0,.85)}
   .empty img{width:64px;height:64px;border-radius:14px;opacity:.9;filter:saturate(1.1)}
-  .empty h2{margin:0;font-size:16px;color:var(--dim);font-weight:600}
-  .empty p{margin:0;max-width:380px;line-height:1.6;font-size:13px}
+  .empty h2{margin:0;font-size:17px;color:var(--ink);font-weight:650;letter-spacing:-.01em}
+  .empty p{margin:0;max-width:390px;line-height:1.62;font-size:13px;color:var(--steel)}
   .empty .steps{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:4px}
   .empty .steps span{font-family:var(--mono);font-size:10.5px;color:var(--dim);
     border:1px solid var(--line);border-radius:20px;padding:4px 11px;background:var(--panel)}
@@ -271,12 +413,14 @@
   .starter:hover{border-color:var(--amber);color:#fff}
 
   /* test console */
-  .testtop{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line2);background:var(--bg2)}
+  .testtop{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line2);
+    background:rgba(16,19,21,.9);backdrop-filter:blur(12px)}
   .testtop .args{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:8px;
     color:var(--ink);font-family:var(--mono);font-size:12px;padding:7px 10px;outline:none}
   .testtop .args:focus{border-color:var(--amber)}
   .console{flex:1;overflow:auto;padding:12px 16px;font-family:var(--mono);font-size:12px;line-height:1.6;
-    white-space:pre-wrap;word-break:break-word;color:var(--dim)}
+    white-space:pre-wrap;word-break:break-word;color:var(--dim);
+    background:rgba(10,12,13,.74);backdrop-filter:blur(12px) saturate(.85)}
   .console .ok{color:var(--lime)} .console .bad{color:var(--red)} .console .meta{color:var(--faint)}
   .console .out{color:var(--steel)}
   .console .placeholder{color:var(--faint);font-style:italic}
@@ -395,25 +539,17 @@
 </head>
 <body>
 <div class="bg-fx" aria-hidden="true">
-  <svg class="bg-town" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMax slice"
+  <!-- The town is a real image now, not 180 lines of hand-plotted SVG paths.
+       WebP first, JPEG for anything that can't decode it. -->
+  <picture>
+    <source srcset="/assets/town.webp" type="image/webp">
+    <img class="bg-town" src="/assets/town.jpg" alt="" decoding="async" fetchpriority="low"
+         onerror="document.documentElement.classList.add('noart')">
+  </picture>
+  <!-- snow stays vector: three parallax layers on a seamless 800px loop -->
+  <svg class="bg-snow" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice"
        xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
     <defs>
-      <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="#142339"/>
-        <stop offset="55%" stop-color="#243a57"/>
-        <stop offset="100%" stop-color="#3a5270"/>
-      </linearGradient>
-      <!-- a single construction-paper pine, reused at different sizes -->
-      <g id="pine">
-        <rect x="-5" y="-20" width="10" height="22" fill="#3a2a1c"/>
-        <polygon points="0,-96 -50,-22 50,-22" fill="#2f4a37"/>
-        <polygon points="0,-128 -41,-58 41,-58" fill="#356b46"/>
-        <polygon points="0,-158 -31,-98 31,-98" fill="#2f5a3d"/>
-        <polygon points="0,-158 -10,-140 10,-140" fill="#e3ebf3" stroke="none"/>
-        <polygon points="0,-128 -13,-108 13,-108" fill="#e3ebf3" stroke="none"/>
-        <polygon points="0,-96 -16,-72 16,-72" fill="#e3ebf3" stroke="none"/>
-      </g>
-      <!-- snowflake fields (stacked + duplicated for a seamless vertical loop) -->
       <g id="flkA" fill="#f2f6fb" stroke="none">
         <circle cx="50" cy="40" r="1.6"/><circle cx="170" cy="140" r="1.6"/><circle cx="300" cy="70" r="1.6"/>
         <circle cx="430" cy="180" r="1.6"/><circle cx="560" cy="50" r="1.6"/><circle cx="690" cy="150" r="1.6"/>
@@ -435,150 +571,12 @@
         <circle cx="960" cy="440" r="3.2"/>
       </g>
     </defs>
-
-    <!-- sky + moon + stars -->
-    <rect width="1200" height="800" fill="url(#sky)"/>
-    <circle cx="1015" cy="125" r="70" fill="#aebfd6" opacity=".18"/>
-    <circle cx="1015" cy="125" r="44" fill="#f2ecd8"/>
-    <g fill="#cdd8ea" stroke="none">
-      <circle cx="120" cy="90" r="1.3"/><circle cx="300" cy="60" r="1.3"/><circle cx="520" cy="110" r="1.3"/>
-      <circle cx="720" cy="80" r="1.3"/><circle cx="180" cy="180" r="1.3"/><circle cx="420" cy="150" r="1.3"/>
-      <circle cx="900" cy="200" r="1.3"/><circle cx="640" cy="170" r="1.3"/>
-    </g>
-
-    <!-- mountain ranges -->
-    <polygon points="0,560 130,360 250,470 400,300 540,470 700,330 880,470 1050,360 1200,470 1200,800 0,800" fill="#34465f"/>
-    <polygon points="0,610 160,430 300,540 470,360 620,540 780,440 940,560 1100,450 1200,540 1200,800 0,800" fill="#293a52"/>
-    <g fill="#cdd9e8" stroke="none">
-      <polygon points="160,430 134,468 186,468"/>
-      <polygon points="470,360 440,406 500,406"/>
-      <polygon points="780,440 754,478 806,478"/>
-      <polygon points="1100,450 1074,486 1126,486"/>
-    </g>
-
-    <!-- snow ground -->
-    <path d="M0,604 C150,566 300,612 450,584 S760,560 900,592 S1150,576 1200,596 L1200,800 L0,800 Z"
-          fill="#e3ebf3" stroke="#c4d2e2" stroke-width="1.6"/>
-    <ellipse cx="300" cy="690" rx="220" ry="46" fill="#eef4fa" opacity=".7" stroke="none"/>
-    <ellipse cx="980" cy="712" rx="260" ry="50" fill="#eef4fa" opacity=".6" stroke="none"/>
-
-    <!-- foreground cut-outs share a dark paper outline -->
-    <g stroke="#101a26" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round">
-
-      <!-- distant pines -->
-      <use href="#pine" xlink:href="#pine" transform="translate(700,572) scale(.6)"/>
-      <use href="#pine" xlink:href="#pine" transform="translate(770,580) scale(.5)"/>
-
-      <!-- cabin A (warm-lit windows tie into the amber accent) -->
-      <rect x="762" y="474" width="132" height="92" fill="#46342a"/>
-      <polygon points="748,478 908,478 828,418" fill="#5a4232"/>
-      <polygon points="756,474 900,474 828,427" fill="#e3ebf3" stroke="none"/>
-      <rect x="868" y="430" width="16" height="30" fill="#3c2c22"/>
-      <rect x="866" y="426" width="20" height="8" fill="#e3ebf3" stroke="none"/>
-      <rect x="778" y="496" width="36" height="40" fill="#e8a33d" opacity=".22" stroke="none"/>
-      <rect x="842" y="496" width="36" height="40" fill="#e8a33d" opacity=".22" stroke="none"/>
-      <rect x="782" y="500" width="28" height="32" rx="2" fill="#e8a33d"/>
-      <rect x="846" y="500" width="28" height="32" rx="2" fill="#e8a33d"/>
-      <path d="M796,500 v32 M782,516 h28 M860,500 v32 M846,516 h28" stroke="#3c2c22" stroke-width="1.6"/>
-      <rect x="816" y="520" width="26" height="46" fill="#33251c"/>
-      <circle cx="836" cy="544" r="2.4" fill="#e8a33d" stroke="none"/>
-      <g stroke="none" fill="#aeb8c4" opacity=".5">
-        <circle cx="876" cy="412" r="7"/><circle cx="884" cy="398" r="9"/><circle cx="874" cy="382" r="11"/>
-      </g>
-
-      <!-- cabin B -->
-      <rect x="980" y="498" width="92" height="68" fill="#3f2e24"/>
-      <polygon points="968,500 1084,500 1026,452" fill="#523a2c"/>
-      <polygon points="975,498 1077,498 1026,460" fill="#e3ebf3" stroke="none"/>
-      <rect x="998" y="516" width="22" height="26" rx="2" fill="#e8a33d"/>
-      <rect x="1034" y="516" width="22" height="26" rx="2" fill="#e8a33d"/>
-      <path d="M1009,516 v26 M998,529 h22 M1045,516 v26 M1034,529 h22" stroke="#3c2c22" stroke-width="1.4"/>
-
-      <!-- a little bus rolling up to the stop -->
-      <rect x="1054" y="600" width="116" height="44" rx="10" fill="#e7b53a"/>
-      <rect x="1054" y="600" width="18" height="44" fill="#d99a2f"/>
-      <rect x="1066" y="609" width="94" height="16" rx="3" fill="#bcd2dd"/>
-      <path d="M1088,609 v16 M1110,609 v16 M1132,609 v16" stroke="#7d6a36" stroke-width="1.6"/>
-      <circle cx="1060" cy="616" r="3" fill="#f6e6a6" stroke="none"/>
-      <circle cx="1080" cy="646" r="10" fill="#23201a"/><circle cx="1080" cy="646" r="4.2" fill="#6a6258" stroke="none"/>
-      <circle cx="1140" cy="646" r="10" fill="#23201a"/><circle cx="1140" cy="646" r="4.2" fill="#6a6258" stroke="none"/>
-
-      <!-- near pines -->
-      <use href="#pine" xlink:href="#pine" transform="translate(70,648) scale(.95)"/>
-      <use href="#pine" xlink:href="#pine" transform="translate(662,648) scale(.8)"/>
-
-      <!-- bus-stop sign -->
-      <rect x="88" y="470" width="9" height="178" rx="3" fill="#6a5a48"/>
-      <rect x="56" y="452" width="64" height="34" rx="5" fill="#d94f3f"/>
-      <polygon points="56,452 120,452 120,458 56,458" fill="#eef4fa" stroke="none"/>
-      <text x="88" y="476" text-anchor="middle" font-family="Sora, sans-serif" font-size="17" font-weight="700" fill="#fff" stroke="none">BUS</text>
-
-      <!-- snow mounds the kids stand in -->
-      <g stroke="none" fill="#eef4fa">
-        <ellipse cx="185" cy="650" rx="40" ry="10"/><ellipse cx="322" cy="654" rx="38" ry="10"/>
-        <ellipse cx="452" cy="649" rx="42" ry="11"/><ellipse cx="588" cy="652" rx="38" ry="10"/>
-      </g>
-
-      <!-- four bundled-up kids (original cut-outs, South Park style) -->
-      <!-- kid 1 : amber coat, brown beanie -->
-      <g transform="translate(185,650) scale(1.12)">
-        <rect x="-17" y="-18" width="13" height="18" rx="5" fill="#2a2118"/><rect x="4" y="-18" width="13" height="18" rx="5" fill="#2a2118"/>
-        <path d="M0,-86 C-26,-86 -34,-64 -34,-40 C-34,-18 -25,-12 0,-12 C25,-12 34,-18 34,-40 C34,-64 26,-86 0,-86 Z" fill="#d99a33"/>
-        <ellipse cx="-33" cy="-32" rx="9" ry="11" fill="#bd8228"/><ellipse cx="33" cy="-32" rx="9" ry="11" fill="#bd8228"/>
-        <circle cx="0" cy="-106" r="24" fill="#e9c8a4"/>
-        <path d="M-25,-118 a25,24 0 0 1 50,0 Z" fill="#46342a"/>
-        <rect x="-27" y="-120" width="54" height="9" rx="4" fill="#5a4230"/>
-        <ellipse cx="-6.5" cy="-108" rx="5.5" ry="8" fill="#fff"/><ellipse cx="6.5" cy="-108" rx="5.5" ry="8" fill="#fff"/>
-        <circle cx="-6" cy="-107" r="2.7" fill="#15110d" stroke="none"/><circle cx="7" cy="-107" r="2.7" fill="#15110d" stroke="none"/>
-        <path d="M-5,-93 q5,4 10,0" fill="none" stroke="#3a2a20" stroke-width="1.6"/>
-      </g>
-      <!-- kid 2 : teal hooded parka -->
-      <g transform="translate(322,654) scale(1.04)">
-        <rect x="-17" y="-18" width="13" height="18" rx="5" fill="#2a2118"/><rect x="4" y="-18" width="13" height="18" rx="5" fill="#2a2118"/>
-        <path d="M0,-86 C-26,-86 -34,-64 -34,-40 C-34,-18 -25,-12 0,-12 C25,-12 34,-18 34,-40 C34,-64 26,-86 0,-86 Z" fill="#3fa9b8"/>
-        <ellipse cx="-33" cy="-32" rx="9" ry="11" fill="#2f8a98"/><ellipse cx="33" cy="-32" rx="9" ry="11" fill="#2f8a98"/>
-        <ellipse cx="0" cy="-110" rx="33" ry="35" fill="#3fa9b8"/>
-        <circle cx="0" cy="-106" r="24" fill="#e9c8a4"/>
-        <ellipse cx="0" cy="-104" rx="27" ry="29" fill="none" stroke="#eef4fa" stroke-width="6"/>
-        <ellipse cx="-6.5" cy="-108" rx="5.5" ry="8" fill="#fff"/><ellipse cx="6.5" cy="-108" rx="5.5" ry="8" fill="#fff"/>
-        <circle cx="-6" cy="-107" r="2.7" fill="#15110d" stroke="none"/><circle cx="7" cy="-107" r="2.7" fill="#15110d" stroke="none"/>
-        <path d="M-5,-93 q5,4 10,0" fill="none" stroke="#3a2a20" stroke-width="1.6"/>
-      </g>
-      <!-- kid 3 : green coat, tan ushanka -->
-      <g transform="translate(452,649) scale(1.16)">
-        <rect x="-17" y="-18" width="13" height="18" rx="5" fill="#2a2118"/><rect x="4" y="-18" width="13" height="18" rx="5" fill="#2a2118"/>
-        <path d="M0,-86 C-26,-86 -34,-64 -34,-40 C-34,-18 -25,-12 0,-12 C25,-12 34,-18 34,-40 C34,-64 26,-86 0,-86 Z" fill="#6fae3a"/>
-        <ellipse cx="-33" cy="-32" rx="9" ry="11" fill="#5a922e"/><ellipse cx="33" cy="-32" rx="9" ry="11" fill="#5a922e"/>
-        <circle cx="0" cy="-106" r="24" fill="#c79a6e"/>
-        <path d="M-26,-116 a26,23 0 0 1 52,0 Z" fill="#7a5a3a"/>
-        <rect x="-27" y="-120" width="54" height="11" rx="5" fill="#cdbfae"/>
-        <rect x="-31" y="-114" width="12" height="34" rx="6" fill="#7a5a3a"/><rect x="19" y="-114" width="12" height="34" rx="6" fill="#7a5a3a"/>
-        <circle cx="-25" cy="-80" r="6" fill="#cdbfae" stroke="none"/><circle cx="25" cy="-80" r="6" fill="#cdbfae" stroke="none"/>
-        <ellipse cx="-6.5" cy="-108" rx="5.5" ry="8" fill="#fff"/><ellipse cx="6.5" cy="-108" rx="5.5" ry="8" fill="#fff"/>
-        <circle cx="-6" cy="-107" r="2.7" fill="#15110d" stroke="none"/><circle cx="7" cy="-107" r="2.7" fill="#15110d" stroke="none"/>
-        <path d="M-5,-93 q5,4 10,0" fill="none" stroke="#3a2a20" stroke-width="1.6"/>
-      </g>
-      <!-- kid 4 : lilac coat, maroon pom beanie -->
-      <g transform="translate(588,652) scale(1.06)">
-        <rect x="-17" y="-18" width="13" height="18" rx="5" fill="#2a2118"/><rect x="4" y="-18" width="13" height="18" rx="5" fill="#2a2118"/>
-        <path d="M0,-86 C-26,-86 -34,-64 -34,-40 C-34,-18 -25,-12 0,-12 C25,-12 34,-18 34,-40 C34,-64 26,-86 0,-86 Z" fill="#b489d6"/>
-        <ellipse cx="-33" cy="-32" rx="9" ry="11" fill="#9a6fc0"/><ellipse cx="33" cy="-32" rx="9" ry="11" fill="#9a6fc0"/>
-        <circle cx="0" cy="-106" r="24" fill="#e9c8a4"/>
-        <path d="M-25,-118 a25,24 0 0 1 50,0 Z" fill="#7a2f3a"/>
-        <rect x="-27" y="-119" width="54" height="9" rx="4" fill="#8e3a47"/>
-        <circle cx="0" cy="-141" r="8" fill="#eef4fa"/>
-        <ellipse cx="-6.5" cy="-108" rx="5.5" ry="8" fill="#fff"/><ellipse cx="6.5" cy="-108" rx="5.5" ry="8" fill="#fff"/>
-        <circle cx="-6" cy="-107" r="2.7" fill="#15110d" stroke="none"/><circle cx="7" cy="-107" r="2.7" fill="#15110d" stroke="none"/>
-        <path d="M-5,-93 q5,4 10,0" fill="none" stroke="#3a2a20" stroke-width="1.6"/>
-      </g>
-    </g>
-
-    <!-- drifting snow, three parallax layers (CSS-animated) -->
     <g class="snow snow-a" opacity=".5"><use href="#flkA" xlink:href="#flkA"/><use href="#flkA" xlink:href="#flkA" y="-800"/></g>
     <g class="snow snow-b" opacity=".7"><use href="#flkB" xlink:href="#flkB" x="34"/><use href="#flkB" xlink:href="#flkB" x="34" y="-800"/></g>
     <g class="snow snow-c" opacity=".9"><use href="#flkC" xlink:href="#flkC" x="-26"/><use href="#flkC" xlink:href="#flkC" x="-26" y="-800"/></g>
   </svg>
   <div class="bg-scan"></div>
+</div>
 </div>
 
 <div class="app">
@@ -606,6 +604,7 @@
     </div>
     <div class="spacer"></div>
     <select id="providerPick" class="provider-pick" title="Which model builds your tools"></select>
+    <div class="host-chip" id="hostChip" title="the machine TheDawg is building for — it decides which package manager it teaches the model to use" hidden></div>
     <div class="model-pill"><span class="dot" id="modelDot"></span><span id="modelName">connecting…</span></div>
     <button class="icon-btn" id="libBtn" title="Tool library">▤</button>
     <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
@@ -636,10 +635,14 @@
         <div class="box">
           <textarea id="input" rows="1" placeholder="Describe the GUI tool you want to build…  (we'll agree on it first)"></textarea>
           <div class="row">
-            <span class="hint">enter to send · shift+enter for newline</span>
+            <span class="hint">enter to send</span>
             <div class="composer-acts">
               <button class="attach-btn" id="attachBtn" title="Attach a .py to work on, or files for context">⎘ attach</button>
-              <button class="send" id="sendBtn">forge ▸</button>
+              <button class="send" id="sendBtn" title="Forge it  (enter)" aria-label="Send">
+                <img src="/assets/send.png" alt="" width="640" height="320"
+                     onerror="this.closest('.send').classList.add('noart')">
+                <span class="send-fallback">forge ▸</span>
+              </button>
             </div>
           </div>
         </div>
@@ -974,6 +977,7 @@ async function init(){
       `<option value="${p.id}" ${p.id===s.provider?"selected":""}>${p.label}${p.hasKey?"":" (no key)"}</option>`
     ).join("");
     $("#modelName").textContent = s.model || "ready";
+    paintHost(s);
     reflectKey(s.hasKey);
     const an=$("#autotestNote"); if(an) an.textContent = (s.autotest!=null? s.autotest : "—");
     if(!s.hasKey) openSettings();
@@ -982,6 +986,31 @@ async function init(){
   playSound("startup");
   updateSteps();
 }
+
+/* Show which box TheDawg thinks it's building for. Not decoration: the distro
+   decides the package-manager lines baked into the model's system prompt, so if
+   this reads wrong, every install hint the model gives will be wrong too. */
+function paintHost(s){
+  const el=$("#hostChip"); if(!el) return;
+  const d=s.distro||{}; if(!d.pretty){ el.hidden=true; return; }
+  const de=s.desktop||{};
+  const pm=(d.install||"").split(" ").filter(w=>w!=="sudo")[0]||"";
+  const bits=[d.pretty.replace(/\s+Linux$/i,"")];
+  if(pm) bits.push(pm);
+  if(de.session && de.session!=="unknown") bits.push(de.session);
+  if(s.native) bits.push("native");
+  el.innerHTML=bits.map(escapeHtml).join('<span class="hc-sep"> \u00b7 </span>');
+  el.classList.toggle("cachy", !!d.cachy);
+  el.hidden=false;
+}
+
+/* Pause the ambient background whenever the window isn't on screen. A minimised or
+   covered window has no business animating snow on somebody's battery. */
+document.addEventListener("visibilitychange", ()=>{
+  document.documentElement.classList.toggle("idle", document.hidden);
+});
+window.addEventListener("blur", ()=>document.documentElement.classList.add("idle"));
+window.addEventListener("focus", ()=>document.documentElement.classList.remove("idle"));
 
 /* ============================ providers (top bar) ============================ */
 $("#providerPick").onchange = async (e)=>{
@@ -1087,13 +1116,13 @@ async function send(forced){
 }
 
 async function runIntake(request){
-  state.busy=true; $("#sendBtn").disabled=true; addThinking();
+  state.busy=true; $("#sendBtn").disabled=true; $("#sendBtn").classList.add("busy"); addThinking();
   let res;
   try{
     res = await fetch("/api/intake",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({request, provider:$("#providerPick").value})}).then(r=>r.json());
   }catch(e){ res={error:"server"}; }
-  clearThinking(); state.busy=false; $("#sendBtn").disabled=false;
+  clearThinking(); state.busy=false; $("#sendBtn").disabled=false; $("#sendBtn").classList.remove("busy");
   if(res.error || !res.intake || !res.intake.questions || !res.intake.questions.length){ state.intakeDone=true; return false; }
   renderIntake(res.intake); return true;
 }
@@ -1199,13 +1228,13 @@ function dismissFollowup(){
 }
 
 async function converse(){
-  state.busy=true; $("#sendBtn").disabled=true; addThinking();
+  state.busy=true; $("#sendBtn").disabled=true; $("#sendBtn").classList.add("busy"); addThinking();
   let res;
   try{
     res = await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({messages:state.messages, provider:$("#providerPick").value})}).then(r=>r.json());
   }catch(e){ res={error:"Could not reach the local server."}; }
-  clearThinking(); state.busy=false; $("#sendBtn").disabled=false;
+  clearThinking(); state.busy=false; $("#sendBtn").disabled=false; $("#sendBtn").classList.remove("busy");
   if(res.error){ addMsg("smith", fmtError(res)); return; }
   $("#modelName").textContent=res.model || $("#modelName").textContent;
   $("#modelDot").classList.add("on");
@@ -1342,12 +1371,82 @@ function paintNames(){
   paintVer();
 }
 function paintVer(){ const b=$("#semverBadge"); if(b) b.textContent="v"+String(state.ver||"1.0.0").replace(/^v/,""); }
+/* ---------------------------------------------------------------------------
+   Python highlighter.
+
+   This used to pull a 120 KB highlight.js bundle off a CDN — a blocking network
+   request in front of first paint, in a local-only app, to highlight exactly one
+   language. Offline it stalled until DNS gave up. This is a single-pass tokeniser
+   that emits the same `hljs-*` class names, so the stylesheet above is unchanged.
+   About 2 KB, no request, and it colours a 4000-line file in ~25 ms.
+--------------------------------------------------------------------------- */
+const PY_KW = new Set(("False None True and as assert async await break class continue def del " +
+  "elif else except finally for from global if import in is lambda nonlocal not or pass raise " +
+  "return try while with yield match case").split(" "));
+const PY_BUILTIN = new Set(("abs all any bin bool bytearray bytes callable chr classmethod " +
+  "compile complex delattr dict dir divmod enumerate eval exec filter float format frozenset " +
+  "getattr globals hasattr hash help hex id input int isinstance issubclass iter len list " +
+  "locals map max memoryview min next object oct open ord pow print property range repr " +
+  "reversed round set setattr slice sorted staticmethod str sum super tuple type vars zip " +
+  "self cls Exception ValueError TypeError KeyError IndexError RuntimeError OSError " +
+  "FileNotFoundError NotImplementedError").split(" "));
+
+/* One alternation, matched left to right, so a `#` inside a string can never be
+   mistaken for a comment and vice versa. Unterminated strings still match to end
+   of line/file, which matters because the code pane renders WHILE the model is
+   streaming a half-finished script. */
+const PY_TOK = new RegExp([
+  "(#[^\\n]*)",                                    // 1 comment
+  "([rbufRBUF]{0,2}(?:" +
+    '"""[\\s\\S]*?(?:"""|$)' + "|" +               //   triple double
+    "'''[\\s\\S]*?(?:'''|$)" + "|" +               //   triple single
+    '"(?:\\\\[\\s\\S]|[^"\\\\\\n])*"?' + "|" +     //   double
+    "'(?:\\\\[\\s\\S]|[^'\\\\\\n])*'?" +           //   single
+  "))",                                            // 2 string
+  "(@[A-Za-z_][\\w.]*)",                           // 3 decorator
+  "(\\b\\d[\\w.]*)",                               // 4 number
+  "([A-Za-z_]\\w*)"                                // 5 identifier
+].join("|"), "g");
+
+function escHtml(s){
+  /* fast path: most slices contain nothing that needs escaping, and skipping the
+     regex on those is worth roughly 3x over a whole file */
+  if(s.indexOf("&") < 0 && s.indexOf("<") < 0 && s.indexOf(">") < 0) return s;
+  return s.replace(/[&<>]/g, function(c){
+    return c === "&" ? "&amp;" : c === "<" ? "&lt;" : "&gt;"; });
+}
+
+function pyHighlight(src){
+  let out = "", last = 0, m, prevWord = "";
+  PY_TOK.lastIndex = 0;
+  while((m = PY_TOK.exec(src)) !== null){
+    out += escHtml(src.slice(last, m.index));
+    const t = m[0];
+    let cls = null;
+    if(m[1])      cls = "hljs-comment";
+    else if(m[2]) cls = "hljs-string";
+    else if(m[3]) cls = "hljs-meta";
+    else if(m[4]) cls = "hljs-number";
+    else if(m[5]){
+      if(PY_KW.has(t))              cls = "hljs-keyword";
+      else if(prevWord === "def")   cls = "hljs-title function_";
+      else if(prevWord === "class") cls = "hljs-title class_";
+      else if(PY_BUILTIN.has(t))    cls = "hljs-built_in";
+      else if(src[PY_TOK.lastIndex] === "(") cls = "hljs-title function_";
+      prevWord = t;
+    }
+    out += cls ? '<span class="' + cls + '">' + escHtml(t) + "</span>" : escHtml(t);
+    last = m.index + t.length;
+  }
+  return out + escHtml(src.slice(last));
+}
+
 function renderCode(code){
   const body=$("#codeBody"); body.innerHTML="";
   const pre=document.createElement("pre"); pre.className="code";
   let html;
-  try{ html=hljs.highlight(code,{language:"python"}).value; }
-  catch(e){ html=code.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+  try{ html=pyHighlight(code); }
+  catch(e){ html=escHtml(code); }
   pre.innerHTML=html.split("\n").map(l=>`<span class="line">${l||" "}</span>`).join("");
   body.appendChild(pre);
 }
@@ -1453,7 +1552,12 @@ $("#depsBtn").onclick=async ()=>{
   catch(e){ toast("Couldn't reach the local server", true); return; }
   const pip=d.pip||[], tk=d.toolkit;
   if(!pip.length){
-    if(tk && tk.module==="tkinter") addMsg("smith","This tool uses Tkinter, part of Python's standard library — no pip install needed. If it's missing on Debian/Ubuntu/Mint:\n\n```\nsudo apt install python3-tk\n```");
+    /* Tkinter and GTK4 have no pip package — they come from the distro. Use the
+       hint the SERVER computed for the real machine, never a guessed apt line. */
+    if(tk && !tk.pip && tk.sys_hint)
+      addMsg("smith",`This tool uses ${tk.label}, which doesn't come from pip — it ships with your distribution. Install it with:\n\n\`\`\`\n${tk.sys_hint}\n\`\`\``);
+    else if(tk && tk.module==="tkinter")
+      addMsg("smith","This tool uses Tkinter, part of Python's standard library — no pip install needed.");
     else toast("Pure stdlib — nothing to install");
     return;
   }
