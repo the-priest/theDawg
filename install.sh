@@ -37,7 +37,7 @@ if [ "${1:-}" = "--uninstall" ] || [ "${1:-}" = "-u" ]; then
   echo
   echo "  removing TheDawg"
   rm -rf "$SRC_DIR"
-  rm -f  "$LAUNCHER" "$APP_DIR/thedawg.desktop"
+  rm -f  "$LAUNCHER" "$BIN_DIR/clidawg" "$APP_DIR/thedawg.desktop"
   rm -f  "$ICON_DIR"/*/apps/thedawg.png "$ICON_DIR"/scalable/apps/thedawg.svg
   rm -f  "$ICON_DIR"/*/apps/io.github.the_priest.TheDawg.png \
          "$ICON_DIR"/scalable/apps/io.github.the_priest.TheDawg.svg
@@ -160,6 +160,7 @@ if [ -n "$LOCAL_SRC" ]; then
   step "installing from local checkout: $LOCAL_SRC"
   cp -rf "$LOCAL_SRC/thedawg.py" "$LOCAL_SRC/ui" "$LOCAL_SRC/assets" "$SRC_DIR/"
   [ -f "$LOCAL_SRC/shell.py" ] && cp -f "$LOCAL_SRC/shell.py" "$SRC_DIR/" || true
+  [ -f "$LOCAL_SRC/clidawg.py" ] && cp -f "$LOCAL_SRC/clidawg.py" "$SRC_DIR/" || true
   mkdir -p "$SRC_DIR/sounds"
   [ -d "$LOCAL_SRC/sounds" ] && cp -rf "$LOCAL_SRC/sounds/." "$SRC_DIR/sounds/" || true
   [ -f "$LOCAL_SRC/README.md" ] && cp -f "$LOCAL_SRC/README.md" "$SRC_DIR/" || true
@@ -191,6 +192,20 @@ if [ ! -f "$SRC_DIR/thedawg.py" ]; then
   exit 1
 fi
 ok "source at $SRC_DIR"
+
+# ---- clidawg launcher ----
+if [ -f "$SRC_DIR/clidawg.py" ]; then
+  cat > "$BIN_DIR/clidawg" <<EOCLI
+#!/usr/bin/env bash
+exec python3 "$SRC_DIR/clidawg.py" "\$@"
+EOCLI
+  chmod +x "$BIN_DIR/clidawg"
+  ok "launcher: $BIN_DIR/clidawg  (terminal front end)"
+  if ! python3 -c "import textual" >/dev/null 2>&1; then
+    step "clidawg's TUI wants Textual:  pip install --user textual"
+    step "  (without it, clidawg --plain still works)"
+  fi
+fi
 
 # ---- native window ----
 # TheDawg runs as a real GTK4 application rather than a browser in app mode. That
@@ -324,6 +339,7 @@ printf "  ${GREY}(add to ~/.bashrc / ~/.zshrc to persist, or set it inside TheDa
 # ---- done ----
 printf "\n${LIME}${B}  ready.${R}  launch with:\n"
 printf "  ${B}thedawg${R}\n"
+printf "  ${GREY}or in the terminal:${R}  ${B}clidawg${R}\n"
 printf "  ${GREY}check what else this machine could use:${R}  ${B}thedawg --doctor${R}\n"
 [ "$OS" = "Linux" ] && printf "  ${GREY}or pick TheDawg from your app menu${R}\n"
 printf "\n"

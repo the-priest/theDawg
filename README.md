@@ -83,9 +83,9 @@ If the window comes up black or blank, that's the known Mesa/NVIDIA dmabuf issue
 
 Set one for whichever provider you use, as an environment variable or in **Settings**:
 
-| Provider          | Environment variable         | Notes                       |
-|-------------------|------------------------------|-----------------------------|
-| SiliconFlow       | `SILICONFLOW_API_KEY=sk-...` | Default — DeepSeek V4 Flash |
+| Provider          | Environment variable         | Notes                     |
+|-------------------|------------------------------|---------------------------|
+| SiliconFlow       | `SILICONFLOW_API_KEY=sk-...` | Default — DeepSeek V4 Pro |
 | Groq              | `GROQ_API_KEY=gsk_...`       | Fast, free tier             |
 | Google AI Studio  | `GOOGLE_API_KEY=AIza...`     |                             |
 | Novita AI         | `NOVITA_API_KEY=sk_...`      |                             |
@@ -164,6 +164,39 @@ Toolkits it can target: **PyQt6 / PySide6** (default for anything serious, best 
 
 ---
 
+## Models & spend
+
+**DeepSeek V4 Pro is the primary** — 1.6T MoE, 1M context, and the strongest coding
+model on the provider (93.5% LiveCodeBench). It runs with graded reasoning effort on the
+build path, which is where mistakes actually cost you something.
+
+It does **not** run on everything. Calls are tiered by what the job is worth:
+
+| Work | Model | Why |
+|---|---|---|
+| Writing a tool, auto-fix rounds, code review | **V4 Pro**, reasoning on | Mistakes here waste your time |
+| Naming a file, intake questions, README prose | **V4 Flash** | Clerical — a 1.6T model is a waste |
+
+That's why "better code" and "cheaper" aren't in tension: the expensive model runs on
+fewer, more important calls. Alongside it:
+
+- **Local analysis catches what it can for free.** A new signature pass catches wrong
+  argument counts, unknown keyword arguments and mutable defaults — the most common way
+  generated code parses fine and then dies at runtime. Every one caught locally is a paid
+  fix round that never happens. Tested at zero false positives against 5,000 lines of real
+  code, because a false positive would cause exactly the round-trip it exists to prevent.
+- Superseded copies of the script are collapsed out of the conversation, so a long
+  iterate-and-fix session doesn't resend ten versions of the same growing file.
+- Reply length is capped per tier, so a rambling model can't run up a bill.
+- The fix-round preamble no longer resends a generic checklist on top of the specific
+  findings.
+
+**You can watch it happen.** The top bar shows tokens and a running cost estimate for the
+session; `clidawg /cost` breaks it down per model. Prices are list rates and the figure is
+an indicator, not an invoice.
+
+---
+
 ## Speed
 
 The UI now makes **zero external network requests**. It used to block first paint on Google
@@ -185,14 +218,6 @@ with the network unplugged it stalled until DNS gave up. Both are gone: system f
 - API keys live in a local config file and are never sent to the browser.
 - Generated tools run on your machine as you. The danger guard flags destructive patterns
   before anything runs, but you are always the one who presses launch.
-
----
-
-## A note on the artwork
-
-The backdrop and the SEND button are South Park assets. Fine on your own machine, but not
-yours to redistribute — `.gitignore` excludes them so they don't ship if you push this repo.
-Without them TheDawg still runs; you just get the plain dark theme.
 
 ---
 

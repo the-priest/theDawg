@@ -157,6 +157,7 @@
     font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;color:#8fd7de;white-space:nowrap}
   .host-chip .hc-sep{opacity:.45}
   .host-chip.cachy{background:rgba(159,224,74,.09);border-color:rgba(159,224,74,.26);color:#bfe98a}
+  .host-chip.cost{background:rgba(232,163,61,.08);border-color:rgba(232,163,61,.22);color:#e8c48d}
   .tool-chip .fn{color:var(--steel)}
   .tool-chip.locked .fn{color:var(--ink)}
   .tool-chip.locked .fn::after{content:"🔒";font-size:9px;margin-left:5px;opacity:.55}
@@ -604,6 +605,7 @@
     </div>
     <div class="spacer"></div>
     <select id="providerPick" class="provider-pick" title="Which model builds your tools"></select>
+    <div class="host-chip cost" id="costChip" title="tokens used this session, and roughly what they cost. Build turns use V4 Pro; naming, intake and README work go to V4 Flash." hidden></div>
     <div class="host-chip" id="hostChip" title="the machine TheDawg is building for — it decides which package manager it teaches the model to use" hidden></div>
     <div class="model-pill"><span class="dot" id="modelDot"></span><span id="modelName">connecting…</span></div>
     <button class="icon-btn" id="libBtn" title="Tool library">▤</button>
@@ -929,6 +931,7 @@ function loadCodeFile(fname, text){
   state.name=(fname.replace(/\.[^.]+$/,"")||"loaded").replace(/[^A-Za-z0-9_\-]/g,"_");
   state.named=false; state._semverInit=false; state.title=state.name;
   state.intakeDone=true; state.prevCode=null; state.sessionId=null;
+  state.hasRun=false; state.lastError=null; state.pendingRelease=false;
   $("#thread").innerHTML="";
   addMsg("you", `Loaded: ${fname} (${lines} lines)`);
   addMsg("smith", "Loaded your file into the workspace — it's ready to run, debug, or improve. Tell me what you want to do with it, or hit Run to see how it behaves.");
@@ -968,8 +971,14 @@ $("#winMin").onclick = ()=>toast("Minimize is handled by your window manager —
 
 /* ============================ boot ============================ */
 init();
+/* Saving settings calls init() again to pick up the new key/model. It used to
+   re-run the whole boot sequence with it — a second "what do you want to build?"
+   greeting appended to a conversation already in progress, and the startup chime
+   replayed. Only the first call is a boot; the rest just refresh the top bar. */
+let _booted=false;
 async function init(){
-  await loadSounds();
+  const first=!_booted; _booted=true;
+  if(first) await loadSounds();
   try{
     const s = await fetch("/api/status").then(r=>r.json());
     providers = s.providers || [];
@@ -978,10 +987,12 @@ async function init(){
     ).join("");
     $("#modelName").textContent = s.model || "ready";
     paintHost(s);
+    paintCost(s);
     reflectKey(s.hasKey);
     const an=$("#autotestNote"); if(an) an.textContent = (s.autotest!=null? s.autotest : "—");
     if(!s.hasKey) openSettings();
   }catch(e){ $("#modelName").textContent = "server offline"; }
+  if(!first) return;
   greet();
   playSound("startup");
   updateSteps();
@@ -1001,6 +1012,22 @@ function paintHost(s){
   if(s.native) bits.push("native");
   el.innerHTML=bits.map(escapeHtml).join('<span class="hc-sep"> \u00b7 </span>');
   el.classList.toggle("cachy", !!d.cachy);
+  el.hidden=false;
+}
+
+/* Tokens are invisible until they're a bill. Show them as they accrue, so the
+   cost of a long iterate-and-fix session is something you can watch rather than
+   discover later. */
+function paintCost(s){
+  const el=$("#costChip"); if(!el) return;
+  const u=s.usage||{}; const t=u.session||{};
+  const total=(t.in||0)+(t.out||0);
+  if(!total){ el.hidden=true; return; }
+  const k=n=>n>=1000?(n/1000).toFixed(n>=10000?0:1)+"k":String(n);
+  let txt=`${k(total)} tok`;
+  if(u.cost_usd>0) txt+=`<span class="hc-sep"> \u00b7 </span>$${u.cost_usd.toFixed(3)}${u.cost_complete?"":"+"}`;
+  if(t.calls) txt+=`<span class="hc-sep"> \u00b7 </span>${t.calls} call${t.calls===1?"":"s"}`;
+  el.innerHTML=txt;
   el.hidden=false;
 }
 
@@ -1472,7 +1499,14 @@ $("#toolChip").onclick=()=>{
   toast(`Locked name: ${state.name}.py — only the version moves now`);
 };
 
-$("#copyBtn").onclick=()=>{ navigator.clipboard.writeText(state.code||""); toast("Copied to clipboard"); };
+/* writeText returns a promise that can reject (permissions, no focus). The old
+   calls ignored it and toasted success unconditionally, so a failed copy looked
+   exactly like a successful one and the paste came back empty. */
+async function copyText(text, okMsg){
+  try{ await navigator.clipboard.writeText(text||""); toast(okMsg); }
+  catch(e){ toast("Couldn't copy — select the text and copy it manually", true); }
+}
+$("#copyBtn").onclick=()=>copyText(state.code||"", "Copied to clipboard");
 $("#saveBtn").onclick=save;
 
 /* ============================ diff ============================ */
@@ -1618,6 +1652,8 @@ async function resumeSession(id){
   const s=r.session;
   state.messages=s.messages||[]; state.name=s.name||s.id; state.sessionId=s.id;
   state.intakeDone=true; state.prevCode=null; state.attachments=[]; state.hasRun=false; renderAttachments();
+  // a resumed tool inherits none of the last one's run state
+  state.lastError=null; showStop(null); $("#shotWrap").style.display="none";
   state.ver=s.ver||"1.0.0"; state.named=!!s.named; state.title=s.title||s.name||s.id; state._semverInit=true;
   $("#thread").innerHTML="";
   (s.messages||[]).forEach(m=>{
@@ -1641,7 +1677,9 @@ async function renderLibrary(){
       <div class="row"><span class="open">open ▸</span><span class="del" data-id="${t.id}">delete</span></div>
     </div>`).join("");
   $("#libBody").querySelectorAll(".lib-item").forEach(el=>{
-    el.querySelector(".open").onclick=()=>loadFromLibrary(el.dataset.id);
+    /* the .open span sits INSIDE the item, so its handler fired and then the
+       click bubbled to the item handler and fired again — two loads, two fetches,
+       the thread cleared and rebuilt twice. The item handler alone covers both. */
     el.onclick=(e)=>{ if(!e.target.classList.contains("del")) loadFromLibrary(el.dataset.id); };
     el.querySelector(".del").onclick=async(e)=>{ e.stopPropagation();
       await fetch("/api/library/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:el.dataset.id})});
@@ -1656,6 +1694,7 @@ async function loadFromLibrary(id){
   const tool=r.tool;
   state.messages=tool.messages||[]; state.name=tool.name||tool.id; state.intakeDone=true; state.prevCode=null;
   state.sessionId=null; state.attachments=[]; state.hasRun=false; renderAttachments();
+  state.lastError=null; showStop(null); $("#shotWrap").style.display="none";
   state.ver=tool.ver||"1.0.0"; state.named=!!tool.named; state.title=tool.title||tool.name||tool.id; state._semverInit=true;
   $("#thread").innerHTML="";
   (tool.messages||[]).forEach(m=>{
@@ -1698,8 +1737,13 @@ $("#ghGenerate").onclick=async ()=>{
     const msgs=[...state.messages, {role:"user", content:"Produce the RELEASE version: polished, top docstring with usage, clean argparse CLI with --help, robust error handling, sensible exit codes, helpful comments, no dead code. Return the full script."}];
     rel=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({messages:msgs, provider:$("#providerPick").value})}).then(r=>r.json());
   }catch(e){ rel={error:"server"}; }
-  if(rel.error){ toast("⚠ "+rel.error, true); resetGhBtn(); return; }
+  if(rel.error){ state.pendingRelease=false; toast("⚠ "+rel.error, true); resetGhBtn(); return; }
   const {code:relCode}=splitReply(rel.reply);
+  /* pendingRelease was set on the way in and then never cleared — not on the
+     success path (which calls setVersion directly and never consumes the flag)
+     and not on any of the three error returns. It stayed true for the rest of
+     the session, so the NEXT ordinary build came back badged "release". */
+  state.pendingRelease=false;
   if(relCode){ loadCode(relCode); setVersion("release"); state.messages.push({role:"assistant",content:rel.reply}); }
   const finalCode=relCode||state.code;
   $("#ghGenerate").textContent="assembling repo…";
@@ -1723,8 +1767,8 @@ function showGhResult(w){
   $("#ghPath").textContent=w.path||"";
   addMsg("smith", `GitHub repo assembled at ${w.path}. The README has the one-line Linux installer, and the push commands are in the dialog — HTTPS remote, as you wanted.`, `${state.name} · release + repo files`);
 }
-$("#ghCopyInstall").onclick=()=>{ navigator.clipboard.writeText($("#ghInstall").textContent); toast("Linux install line copied"); };
-$("#ghCopyPush").onclick=()=>{ navigator.clipboard.writeText($("#ghPush").textContent); toast("Push commands copied"); };
+$("#ghCopyInstall").onclick=()=>copyText($("#ghInstall").textContent, "Linux install line copied");
+$("#ghCopyPush").onclick=()=>copyText($("#ghPush").textContent, "Push commands copied");
 $("#ghDone").onclick=()=>closeScrim("ghScrim");
 
 /* ============================ build (PyInstaller) ============================ */
@@ -1781,6 +1825,7 @@ async function run(confirmed){
   catch(e){ con.innerHTML=`<span class="meta">${cmdLine}</span>\n\n<span class="bad">Couldn't reach the local TheDawg server. Is it still running in your terminal?</span>`; return; }
   if(res.needsConfirm){ $("#dangerPatts").textContent=res.patterns.join("   ·   "); openScrim("dangerScrim"); con.innerHTML=`<span class="placeholder">Blocked pending your confirmation.</span>`; return; }
   state.hasRun=true; updateSteps();
+  state.lastError=null;   // a fresh run supersedes whatever failed last time
   if(res.error){ con.innerHTML=`<span class="meta">${cmdLine}</span>\n\n<span class="bad">${esc(res.error)}</span>`; return; }
   if(res.gui){
     let html=`<span class="meta">${cmdLine}</span>\n\n`;
@@ -1832,7 +1877,11 @@ function renderProbe(res){
     verdict.className = "verdict " + (blank ? "bad" : "good");
     wrap.style.display="block";
   } else { wrap.style.display="none"; }
-  if(res.report) state.lastError = res.report;   // so "send log to AI" / dbl-click has it
+  /* Only arm the double-click-to-fix path when something is actually WRONG.
+     This used to fire on a clean self-test too, so double-clicking the console
+     after a passing run sent the model "It failed with this error:" followed by
+     a report saying the tool was fine. */
+  state.lastError = (res.ran && !res.ok) ? (res.report || null) : null;
   state.hasRun=true; updateSteps();
 }
 $("#shotClose").onclick=()=>{ $("#shotWrap").style.display="none"; };
@@ -1852,6 +1901,7 @@ $("#fixLogBtn").onclick=async ()=>{
 let polishing=false, polishAbort=null;
 function endPolish(msg){
   polishing=false;
+  state.busy=false; $("#sendBtn").disabled=false;
   if(polishAbort){ try{ polishAbort.abort(); }catch(e){} polishAbort=null; }
   const btn=$("#polishBtn"); btn.classList.remove("running"); btn.textContent="✦ auto-polish loop";
   if(msg!==undefined) $("#polishStatus").textContent=msg;
@@ -1859,8 +1909,13 @@ function endPolish(msg){
 }
 $("#polishBtn").onclick=async ()=>{
   if(polishing){ endPolish("stopped"); return; }     // STOP: takes effect immediately
-  if(!state.code) return;
+  if(!state.code || state.busy) return;
   polishing=true;
+  /* The loop rewrites state.code and state.messages on every round. Without
+     claiming busy, the composer stayed live the whole time — send a message
+     mid-polish and two writers interleaved on the same conversation, so one
+     side's version of the code silently won. */
+  state.busy=true; $("#sendBtn").disabled=true;
   const btn=$("#polishBtn"); btn.classList.add("running"); btn.textContent="■ stop polishing";
   let round=0;
   while(polishing){
@@ -1901,7 +1956,21 @@ $("#polishBtn").onclick=async ()=>{
 };
 
 /* ============================ log download / clear ============================ */
-$("#dlLogBtn").onclick=()=>{ window.open("/api/log.txt","_blank"); };
+/* window.open() asks WebKit to create a second web view. In the native GTK4
+   shell nothing handles that, so this button did nothing at all — it only ever
+   worked in the browser fallback. Fetch the log and hand the browser a blob
+   instead, which downloads the same file in both front doors. */
+$("#dlLogBtn").onclick=async ()=>{
+  try{
+    const txt=await fetch("/api/log.txt").then(r=>r.text());
+    const url=URL.createObjectURL(new Blob([txt],{type:"text/plain"}));
+    const a=document.createElement("a");
+    a.href=url; a.download="thedawg-session.log";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 5000);
+    toast("Saved thedawg-session.log");
+  }catch(e){ toast("Couldn't download the log", true); }
+};
 $("#clearLogBtn").onclick=async ()=>{
   try{ await fetch("/api/log.clear",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}); toast("Run log cleared"); }
   catch(e){ toast("Couldn't reach the local server", true); }
@@ -2006,14 +2075,20 @@ $("#newBtn").onclick=()=>{
   $("#console").innerHTML=`<span class="placeholder">Launch output appears here.</span>`;
   $("#args").value=""; showStop(null);
   state.prevCode=null; state.sessionId=null;
-  ["copyBtn","saveBtn","runBtn","releaseBtn","fixLogBtn","polishBtn","dlLogBtn","clearLogBtn",
+  /* probeBtn is in the ENABLE list in loadCode() but was missing from this one,
+     so after ＋ new tool the self-test button stayed lit with nothing to test. */
+  ["copyBtn","saveBtn","runBtn","releaseBtn","probeBtn","fixLogBtn","polishBtn","dlLogBtn","clearLogBtn",
    "editBtn","diffBtn","depsBtn","libSaveBtn","reviewBtn","buildBtn"].forEach(id=>$("#"+id).disabled=true);
   greet();
   updateSteps();
 };
 
 /* ============================ utils ============================ */
-function esc(s){ return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+/* Quotes matter: esc() is used inside HTML ATTRIBUTES in several places
+   (title="…", value="…"), and escaping only &<> meant a filename or a model id
+   containing a quote broke straight out of the attribute it was sitting in. */
+const _ESC={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>_ESC[c]); }
 function escapeHtml(s){ return esc(s); }
 function fmtError(res){
   if(res.error==="context_overflow") return "⚠ "+(res.detail||"This conversation got too long for the model. Start a new tool (＋ new tool) to reset — your library is safe.");

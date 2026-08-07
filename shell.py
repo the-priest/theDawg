@@ -199,6 +199,11 @@ def run(url, config_dir, data_dir, icon_dir=None, on_quit=None, dev=False):
 
             # links to real websites open in the user's browser, not in here
             self.web.connect("decide-policy", self._on_policy)
+            # `window.open(...)` / target="_blank" asks WebKit to CREATE a second
+            # web view. With nothing connected to "create", WebKit makes none and
+            # the click does nothing at all — which is why "⤓ download log" was
+            # silently dead in the native window while working fine in a browser.
+            self.web.connect("create", self._on_create)
 
             # --- header bar ---------------------------------------------------
             head = Adw.HeaderBar()
@@ -302,6 +307,25 @@ def run(url, config_dir, data_dir, icon_dir=None, on_quit=None, dev=False):
                 Gio.AppInfo.launch_default_for_uri(url, None)
             except Exception:
                 pass
+
+        def _on_create(self, web, nav_action):
+            """Hand a popup request to the right place instead of dropping it."""
+            try:
+                uri = nav_action.get_request().get_uri() or ""
+            except Exception:
+                uri = ""
+            if not uri:
+                return None
+            if uri.startswith(url):
+                # our own server (a file download, the log) — load it here rather
+                # than bouncing it out to a browser that isn't holding the session
+                self.web.load_uri(uri)
+            else:
+                try:
+                    Gio.AppInfo.launch_default_for_uri(uri, None)
+                except Exception:
+                    pass
+            return None
 
         def _on_policy(self, web, decision, dtype):
             """Keep the app window on the local server; send everything else out

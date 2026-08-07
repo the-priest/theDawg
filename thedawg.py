@@ -52,7 +52,7 @@ import urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "2.0.0"
+__version__ = "2.2.3"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --------------------------------------------------------------------------
@@ -297,9 +297,11 @@ PROVIDERS = {
         "models_url": "https://api.siliconflow.com/v1/models?sub_type=chat",
         "env": "SILICONFLOW_API_KEY",
         "kind": "openai",
-        # V4 Flash first — your chosen primary: 1M context, fast, far cheaper than Pro.
-        # The rest are fallbacks only; a live /models fetch overrides this list.
+        # V4 Pro first — the primary. 1.6T MoE (49B active), 1M context, and the
+        # strongest coding model on this provider (93.5% LiveCodeBench). Flash sits
+        # right behind it and does all the cheap auxiliary work: see MODEL_TIERS.
         "models": [
+            "deepseek-ai/DeepSeek-V4-Pro",
             "deepseek-ai/DeepSeek-V4-Flash",
             "deepseek-ai/DeepSeek-V3",
             "Qwen/Qwen2.5-72B-Instruct",
@@ -340,10 +342,42 @@ PROVIDERS = {
 # default provider on first launch: SiliconFlow primary, Groq is the fallback.
 DEFAULT_PROVIDER = "siliconflow"
 # when no model is explicitly chosen, prefer this one on the default provider.
-# DeepSeek V4 Flash is the primary: 1M context, fast, and far cheaper than V4 Pro.
 DEFAULT_MODEL_BY_PROVIDER = {
-    "siliconflow": "deepseek-ai/DeepSeek-V4-Flash",
+    "siliconflow": "deepseek-ai/DeepSeek-V4-Pro",
 }
+
+# ==========================================================================
+# TASK TIERS  --  the single biggest lever on both code quality AND spend.
+#
+# Not every call needs a 1.6-trillion-parameter model. Writing and repairing a
+# tool is where mistakes actually hurt, so that goes to V4 Pro with reasoning
+# turned on. Naming a file, turning a question into buttons, drafting a README —
+# those are clerical, and Flash does them for a fraction of the price.
+#
+# Routing this way is why "better code" and "cheaper" aren't in tension here:
+# the expensive model runs on fewer, more important calls.
+# ==========================================================================
+MODEL_TIERS = {
+    "siliconflow": {"build": "deepseek-ai/DeepSeek-V4-Pro",
+                    "cheap": "deepseek-ai/DeepSeek-V4-Flash"},
+    "novita":      {"build": "deepseek/deepseek-v4-pro",
+                    "cheap": "deepseek/deepseek-v4-flash"},
+    "google":      {"build": "gemini-2.5-pro", "cheap": "gemini-2.5-flash"},
+    "groq":        {"build": None, "cheap": None},     # use whatever the chain gives
+}
+
+# Ceilings on the reply. Without one, a model that starts rambling bills you for
+# every token of it. A 2000-line tool is about 25k tokens, so 32k is generous.
+MAX_TOKENS = {"build": 32000, "cheap": 2000}
+
+# DeepSeek V4 exposes graded reasoning effort. On the build path it's worth
+# paying for — it's the difference between code that runs and code that nearly
+# runs. Everywhere else it's off.
+REASONING_EFFORT = {"build": "high", "cheap": None}
+
+# Fields some gateways reject outright. Once a (provider, model, field) 400s we
+# stop sending it rather than burning a retry on every future call.
+_UNSUPPORTED_FIELDS = set()
 # providers tried in order if the primary provider's whole chain fails outright.
 FALLBACK_PROVIDERS = ["groq"]
 
@@ -688,29 +722,61 @@ DANGER = [
 CONFIG_PATH = str(config_dir() / "config.json")
 
 def load_config():
+    c = read_json(CONFIG_PATH, {})
+    return c if isinstance(c, dict) else {}
+
+def write_json_atomic(path, obj, mode=None):
+    """Write JSON so a crash, a full disk or a killed process can never leave a
+    half-written file behind.
+
+    The old code wrote straight over the target with the platform's default text
+    encoding. Two ways that bit: an interrupted write truncated a saved tool to
+    nothing (the whole conversation gone), and a non-UTF-8 locale raised on any
+    tool whose code or chat contained a non-ASCII character. Write to a sibling
+    temp file, fsync it, then rename — rename is atomic on POSIX, so the target
+    is either the old file or the new one, never a stump.
+    """
+    path = str(path)
+    d = os.path.dirname(path) or "."
+    os.makedirs(d, exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
     try:
-        with open(CONFIG_PATH) as f:
-            c = json.load(f)
-            return c if isinstance(c, dict) else {}
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        if mode is not None and not IS_WIN:
+            try:
+                os.chmod(tmp, mode)
+            except Exception:
+                pass
+        os.replace(tmp, path)
+        return True
     except Exception:
-        return {}
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+        return False
+
+
+def read_json(path, default=None):
+    """Read a JSON file as UTF-8. Never raises."""
+    try:
+        with open(str(path), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
 
 def save_config(cfg):
     """Write config (keys + chosen provider) with owner-only perms on POSIX.
     Windows ACLs work differently — the file lives under %APPDATA% which is already
     per-user, so we just write it normally there."""
-    try:
-        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-        with open(CONFIG_PATH, "w") as f:
-            json.dump(cfg, f)
-        if not IS_WIN:
-            try:
-                os.chmod(CONFIG_PATH, 0o600)
-            except Exception:
-                pass
-        return True
-    except Exception:
-        return False
+    return write_json_atomic(CONFIG_PATH, cfg, mode=None if IS_WIN else 0o600)
 
 def _initial_keys():
     """env var wins per provider, else the saved config."""
@@ -808,7 +874,7 @@ def fetch_models(provider_id, force=False):
 
     last_err = None
     # try each candidate host (e.g. SiliconFlow .com then .cn) until one accepts the key
-    for chat_url, models_url in _provider_urls(provider_id):
+    for _chat_url, models_url in _provider_urls(provider_id):
         if not models_url:
             continue
         host = re.sub(r"^https?://([^/]+)/.*$", r"\1", models_url)
@@ -888,36 +954,75 @@ def library_save(name, code, messages, version="testing", args="", sid=None,
            "args": args or "", "toolkit": (detect_toolkit(code or "") or {}).get("label"),
            "ver": ver or "1.0.0", "named": bool(named), "title": title or (name or tid),
            "from_session": sid, "saved": time.strftime("%Y-%m-%d %H:%M")}
-    with open(os.path.join(LIBRARY_DIR, tid + ".json"), "w") as f:
-        json.dump(rec, f)
+    if not write_json_atomic(os.path.join(LIBRARY_DIR, tid + ".json"), rec):
+        return {"error": "could not write to the library directory"}
     return {"id": tid, "saved": rec["saved"]}
 
-def library_list():
-    if not os.path.isdir(LIBRARY_DIR):
-        return {"tools": []}
-    tools = []
-    for fn in os.listdir(LIBRARY_DIR):
+# Opening the library or the in-progress panel used to parse EVERY saved record
+# in full — the whole script plus the entire build conversation — just to render a
+# one-line summary of each. With a couple of dozen saved tools that is tens of
+# megabytes of json parsed on every panel open, and the panel visibly stalled.
+# The summary is now cached per file and only recomputed when that file's mtime or
+# size changes, so a repeat open costs a stat() per record.
+_SUMMARY_CACHE = {}
+_SUMMARY_LOCK = threading.Lock()
+
+
+def _summarise_dir(dirpath, build):
+    """Map each *.json in a directory to a small summary dict, cached on (mtime, size)."""
+    if not os.path.isdir(dirpath):
+        return []
+    out = []
+    live = set()
+    for fn in os.listdir(dirpath):
         if not fn.endswith(".json"):
             continue
+        full = os.path.join(dirpath, fn)
         try:
-            with open(os.path.join(LIBRARY_DIR, fn)) as f:
-                r = json.load(f)
-            tools.append({"id": r.get("id"), "name": r.get("name"),
-                          "saved": r.get("saved"), "toolkit": r.get("toolkit"),
-                          "version": r.get("version", "testing"),
-                          "ver": r.get("ver", "1.0.0"), "title": r.get("title", r.get("name")),
-                          "lines": len((r.get("code") or "").splitlines())})
+            st = os.stat(full)
+        except OSError:
+            continue
+        key = (st.st_mtime_ns, st.st_size)
+        live.add(full)
+        with _SUMMARY_LOCK:
+            hit = _SUMMARY_CACHE.get(full)
+        if hit and hit[0] == key:
+            out.append(hit[1])
+            continue
+        rec = read_json(full)
+        if not isinstance(rec, dict):
+            continue
+        try:
+            summary = build(rec)
         except Exception:
             continue
+        with _SUMMARY_LOCK:
+            _SUMMARY_CACHE[full] = (key, summary)
+        out.append(summary)
+    # drop cache entries for records that have since been deleted
+    with _SUMMARY_LOCK:
+        for stale in [k for k in _SUMMARY_CACHE
+                      if k.startswith(dirpath + os.sep) and k not in live]:
+            _SUMMARY_CACHE.pop(stale, None)
+    return out
+
+
+def library_list():
+    def _build(r):
+        return {"id": r.get("id"), "name": r.get("name"),
+                "saved": r.get("saved"), "toolkit": r.get("toolkit"),
+                "version": r.get("version", "testing"),
+                "ver": r.get("ver", "1.0.0"), "title": r.get("title", r.get("name")),
+                "lines": len((r.get("code") or "").splitlines())}
+    tools = _summarise_dir(LIBRARY_DIR, _build)
     tools.sort(key=lambda t: t.get("saved", ""), reverse=True)
     return {"tools": tools}
 
 def library_load(tid):
-    path = os.path.join(LIBRARY_DIR, _safe_id(tid) + ".json")
-    if not os.path.exists(path):
+    rec = read_json(os.path.join(LIBRARY_DIR, _safe_id(tid) + ".json"))
+    if rec is None:
         return {"error": "not found"}
-    with open(path) as f:
-        return {"tool": json.load(f)}
+    return {"tool": rec}
 
 def library_delete(tid):
     path = os.path.join(LIBRARY_DIR, _safe_id(tid) + ".json")
@@ -930,47 +1035,49 @@ def library_delete(tid):
 # SESSIONS  -- live works-in-progress (auto-saved as you build), like chats
 # --------------------------------------------------------------------------
 SESSION_DIR = str(app_data_dir() / "sessions")
+_SID_LOCK = threading.Lock()
+_SID_SEQ = [0]
+
+
+def _new_session_id():
+    with _SID_LOCK:
+        _SID_SEQ[0] += 1
+        seq = _SID_SEQ[0]
+    return time.strftime("s%Y%m%d-%H%M%S") + f"-{seq:03d}"
+
 
 def session_save(sid, name, code, messages, version="testing", args="",
                  ver="1.0.0", named=False, title=""):
     """Auto-save the live conversation+code for a tool in progress (its full state)."""
     os.makedirs(SESSION_DIR, exist_ok=True)
-    sid = sid or time.strftime("s%Y%m%d-%H%M%S")
+    # A second-resolution id meant two tools started inside the same second got the
+    # same filename, and the second silently overwrote the first. Suffix a counter.
+    sid = sid or _new_session_id()
     rec = {"id": sid, "name": name or "untitled", "code": code or "",
            "messages": messages or [], "version": version or "testing", "args": args or "",
            "toolkit": (detect_toolkit(code or "") or {}).get("label"),
            "ver": ver or "1.0.0", "named": bool(named), "title": title or (name or "untitled"),
            "updated": time.strftime("%Y-%m-%d %H:%M")}
-    with open(os.path.join(SESSION_DIR, _safe_id(sid) + ".json"), "w") as f:
-        json.dump(rec, f)
+    if not write_json_atomic(os.path.join(SESSION_DIR, _safe_id(sid) + ".json"), rec):
+        return {"error": "could not write the session"}
     return {"id": sid, "updated": rec["updated"]}
 
 def session_list():
-    if not os.path.isdir(SESSION_DIR):
-        return {"sessions": []}
-    out = []
-    for fn in os.listdir(SESSION_DIR):
-        if not fn.endswith(".json"):
-            continue
-        try:
-            with open(os.path.join(SESSION_DIR, fn)) as f:
-                r = json.load(f)
-            msgs = r.get("messages", [])
-            out.append({"id": r.get("id"), "name": r.get("name"),
-                        "updated": r.get("updated"), "toolkit": r.get("toolkit"),
-                        "turns": sum(1 for m in msgs if m.get("role") == "user"),
-                        "hasCode": bool(r.get("code"))})
-        except Exception:
-            continue
+    def _build(r):
+        msgs = r.get("messages", [])
+        return {"id": r.get("id"), "name": r.get("name"),
+                "updated": r.get("updated"), "toolkit": r.get("toolkit"),
+                "turns": sum(1 for m in msgs if m.get("role") == "user"),
+                "hasCode": bool(r.get("code"))}
+    out = _summarise_dir(SESSION_DIR, _build)
     out.sort(key=lambda s: s.get("updated", ""), reverse=True)
     return {"sessions": out}
 
 def session_load(sid):
-    path = os.path.join(SESSION_DIR, _safe_id(sid) + ".json")
-    if not os.path.exists(path):
+    rec = read_json(os.path.join(SESSION_DIR, _safe_id(sid) + ".json"))
+    if rec is None:
         return {"error": "not found"}
-    with open(path) as f:
-        return {"session": json.load(f)}
+    return {"session": rec}
 
 def session_delete(sid):
     try:
@@ -996,11 +1103,39 @@ GUI_TOOLKITS = {
     "wx":            ("wxPython",      "wxPython",      ()),
 }
 
+_IMPORT_RE = re.compile(r"^\s*(?:import|from)\s+([a-zA-Z0-9_\.]+)", re.M)
+_TOOLKIT_CACHE = {}
+_TOOLKIT_LOCK = threading.Lock()
+
+
+def _code_key(code):
+    import hashlib
+    return hashlib.sha1((code or "").encode("utf-8", "replace")).hexdigest()
+
+
 def detect_toolkit(code):
     """Return the GUI toolkit a tool uses, or None.
-    Result shape: {module, label, pip (pip package or None), sys_hint (distro command)}."""
+    Result shape: {module, label, pip (pip package or None), sys_hint (distro command)}.
+
+    Memoised on a hash of the source: one build turn calls this from the smoke
+    test, the probe, the launcher, the session autosave and the library save, and
+    each call used to re-scan the whole file with a fresh regex compile.
+    """
+    key = _code_key(code)
+    with _TOOLKIT_LOCK:
+        if key in _TOOLKIT_CACHE:
+            return _TOOLKIT_CACHE[key]
+    res = _detect_toolkit_uncached(code or "")
+    with _TOOLKIT_LOCK:
+        if len(_TOOLKIT_CACHE) > 64:
+            _TOOLKIT_CACHE.clear()
+        _TOOLKIT_CACHE[key] = res
+    return res
+
+
+def _detect_toolkit_uncached(code):
     tops = set()
-    for m in re.finditer(r"^\s*(?:import|from)\s+([a-zA-Z0-9_\.]+)", code, re.M):
+    for m in _IMPORT_RE.finditer(code):
         tops.add(m.group(1).split(".")[0])
     # order matters: check the explicit toolkits before the generic `gi` binding
     for mod in ("PyQt6", "PySide6", "PyQt5", "PySide2", "customtkinter", "wx", "gi", "tkinter"):
@@ -1029,7 +1164,7 @@ def detect_deps(code):
                "platform","tkinter"}
     toolkit_mods = set(GUI_TOOLKITS.keys()) | {"gi"}
     pip = set()
-    for m in re.finditer(r"^\s*(?:import|from)\s+([a-zA-Z0-9_\.]+)", code, re.M):
+    for m in _IMPORT_RE.finditer(code):
         top = m.group(1).split(".")[0]
         if (top and top not in std and top not in obvious
                 and top not in toolkit_mods and not top.startswith("_")):
@@ -1142,10 +1277,83 @@ MODEL_CONTEXT_TOKENS = {
 DEFAULT_CONTEXT_TOKENS = 16000      # safe assumption for an unknown model
 REPLY_RESERVE_TOKENS   = 4000       # leave room for the model's answer
 
+# ==========================================================================
+# TOKEN ACCOUNTING  --  you can't shrink a bill you can't see.
+# Every response carries a usage block; we keep a running total for the session
+# and a per-model breakdown, and surface it in the UI and in `clidawg /cost`.
+# ==========================================================================
+USAGE = {"session": {"in": 0, "out": 0, "calls": 0}, "by_model": {}}
+_USAGE_LOCK = threading.Lock()
+
+# USD per 1M tokens. Published list prices, used only to show a rough running
+# figure — treat it as an indicator, not an invoice.
+PRICE_PER_MTOK = {
+    "deepseek-ai/deepseek-v4-pro":   (0.28, 0.42),
+    "deepseek-ai/deepseek-v4-flash": (0.05, 0.10),
+    "deepseek/deepseek-v4-pro":      (0.28, 0.42),
+    "deepseek/deepseek-v4-flash":    (0.05, 0.10),
+}
+
+
+def record_usage(pid, model, usage):
+    """Fold one response's usage into the running totals."""
+    try:
+        pin = int(usage.get("prompt_tokens") or 0)
+        pout = int(usage.get("completion_tokens") or 0)
+    except Exception:
+        return
+    if not (pin or pout):
+        return
+    with _USAGE_LOCK:
+        USAGE["session"]["in"] += pin
+        USAGE["session"]["out"] += pout
+        USAGE["session"]["calls"] += 1
+        m = USAGE["by_model"].setdefault(model, {"in": 0, "out": 0, "calls": 0})
+        m["in"] += pin; m["out"] += pout; m["calls"] += 1
+
+
+def usage_summary():
+    """Totals plus an estimated cost, for the UI and the CLI."""
+    with _USAGE_LOCK:
+        sess = dict(USAGE["session"])
+        by = {k: dict(v) for k, v in USAGE["by_model"].items()}
+    cost = 0.0
+    priced = True
+    for model, m in by.items():
+        rate = PRICE_PER_MTOK.get(model.lower())
+        if not rate:
+            priced = False
+            continue
+        cost += (m["in"] / 1e6) * rate[0] + (m["out"] / 1e6) * rate[1]
+    return {"session": sess, "by_model": by,
+            "cost_usd": round(cost, 4), "cost_complete": priced}
+
+
+def _guess_context_tokens(mid):
+    """Best guess at an unlisted model's context window.
+
+    Anything not in the table used to be treated as an 8k-class model, so picking a
+    brand-new large-context model from the live catalog silently crippled the build:
+    the conversation got trimmed to 48k chars and long sessions started failing for
+    no visible reason. Recognise the obvious families by name instead, and only fall
+    back to the conservative default when the name says nothing.
+    """
+    s = (mid or "").lower()
+    for frag, toks in (("gemini-1.5-pro", 2000000), ("gemini", 1000000),
+                       ("v4-pro", 1000000), ("v4-flash", 1000000), ("v4", 1000000),
+                       ("gpt-oss", 128000), ("llama-3.1", 128000), ("llama-3.3", 128000),
+                       ("qwen3", 128000), ("deepseek-v3", 64000), ("deepseek-r1", 64000),
+                       ("qwen2.5", 32000), ("mixtral", 32000)):
+        if frag in s:
+            return toks
+    return DEFAULT_CONTEXT_TOKENS
+
+
 def context_budget_chars(model):
     """Usable input-char budget for a specific model, conservatively converted from
     its token window with headroom reserved for the reply."""
-    toks = MODEL_CONTEXT_TOKENS.get((model or "").lower(), DEFAULT_CONTEXT_TOKENS)
+    mid = (model or "").lower()
+    toks = MODEL_CONTEXT_TOKENS.get(mid) or _guess_context_tokens(mid)
     usable = max(2000, toks - REPLY_RESERVE_TOKENS)
     # ~3 input chars per token (conservative for code), capped so we never send an
     # absurdly huge request even to a million-token model (keeps latency/cost sane).
@@ -1231,9 +1439,11 @@ def trim_history(messages, model=None):
     # struck only after long use. Here we make overflow impossible: while the payload is
     # over the model's total budget, truncate the single largest NON-system message (the
     # current code, almost always) until everything fits with headroom.
-    def _total(ms): return sum(_msg_len(m) for m in ms)
+    # (running total rather than re-summing the whole payload on every pass — with a
+    # long conversation the old loop was quadratic in the number of messages)
+    running = sum(_msg_len(m) for m in result)
     guard = 0
-    while _total(result) > budget_total and guard < 200:
+    while running > budget_total and guard < 200:
         guard += 1
         # find the largest message that isn't a system message
         idx, biggest = -1, -1
@@ -1245,7 +1455,7 @@ def trim_history(messages, model=None):
                 biggest, idx = L, i
         if idx < 0 or biggest <= 0:
             break
-        over = _total(result) - budget_total
+        over = running - budget_total
         # cut the overflow plus a small margin, but keep at least a stub
         keep_len = max(500, _msg_len(result[idx]) - over - 400)
         c = result[idx]["content"]
@@ -1253,9 +1463,35 @@ def trim_history(messages, model=None):
             break
         result[idx] = {"role": result[idx]["role"],
                        "content": c[:keep_len] + "\n…(truncated by TheDawg to fit this model's context)…"}
+        running += _msg_len(result[idx]) - biggest
     return result
 
-def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None):
+def _err_detail(exc):
+    """Read an HTTPError's body at most once and cache it on the exception.
+
+    urllib gives you a file-like body that is consumed on first read. When the
+    retry path read it and then re-raised, the outer handler saw an empty string
+    and every check that greps the message — context-overflow, rate limits, bad
+    key — quietly stopped matching. Caching it makes the body safe to read from
+    as many places as need it.
+    """
+    cached = getattr(exc, "_thedawg_detail", None)
+    if cached is not None:
+        return cached
+    detail = ""
+    try:
+        detail = exc.read().decode(errors="replace")[:400]
+    except Exception:
+        detail = ""
+    try:
+        exc._thedawg_detail = detail
+    except Exception:
+        pass
+    return detail
+
+
+def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None,
+               tier="cheap", max_tokens=None):
     """Call the selected provider, falling through its model chain on error.
     Returns {"reply", "model", "provider"} or {"error"}.
     `temperature` defaults to 0.3; the code-build path lowers it for determinism.
@@ -1274,7 +1510,8 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
     if not key:
         if _fallback_chain:
             nxt_pid, rest = _fallback_chain[0], _fallback_chain[1:]
-            alt = call_model(messages, nxt_pid, temperature, _fallback_chain=rest)
+            alt = call_model(messages, nxt_pid, temperature, _fallback_chain=rest,
+                             tier=tier, max_tokens=max_tokens)
             if not alt.get("error"):
                 alt["fellback_from"] = pid
                 return alt
@@ -1288,7 +1525,11 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
     # configured default (e.g. DeepSeek V4 Flash on SiliconFlow) so the primary model
     # is honoured even though the live catalog is rank-sorted (which would otherwise
     # float the pricier V4 Pro to the top). Whatever we pick is pinned to the front.
-    chosen = STATE.get("models", {}).get(pid) or DEFAULT_MODEL_BY_PROVIDER.get(pid)
+    # A model the user picked in Settings always wins. Otherwise the tier decides:
+    # build work goes to the strong model, clerical work to the cheap one.
+    chosen = (STATE.get("models", {}).get(pid)
+              or (MODEL_TIERS.get(pid) or {}).get(tier)
+              or DEFAULT_MODEL_BY_PROVIDER.get(pid))
     chain = provider_model_chain(pid)
     if chosen:
         # match case-insensitively against the live chain so a slightly different
@@ -1325,13 +1566,36 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
                 "Accept": "application/json",
             }
             body = {"model": model, "temperature": temperature, "messages": messages}
-            data = _http_post(chat_url, headers, body)
+            cap = max_tokens or MAX_TOKENS.get(tier)
+            if cap and (pid, model, "max_tokens") not in _UNSUPPORTED_FIELDS:
+                body["max_tokens"] = cap
+            effort = REASONING_EFFORT.get(tier)
+            if effort and (pid, model, "reasoning_effort") not in _UNSUPPORTED_FIELDS:
+                body["reasoning_effort"] = effort
+            try:
+                data = _http_post(chat_url, headers, body)
+            except urllib.error.HTTPError as he:
+                # A gateway that doesn't know these fields answers 400. Remember
+                # that and retry clean, rather than failing the whole request over
+                # an optional parameter.
+                det = _err_detail(he)
+                dl = det.lower()
+                dropped = False
+                for field in ("reasoning_effort", "max_tokens"):
+                    if field in body and (field in dl or "unsupported" in dl
+                                          or "unknown" in dl or "unrecognized" in dl):
+                        _UNSUPPORTED_FIELDS.add((pid, model, field))
+                        body.pop(field, None)
+                        dropped = True
+                if not dropped:
+                    raise
+                data = _http_post(chat_url, headers, body)
             reply = data["choices"][0]["message"]["content"]
-            return {"reply": reply, "model": model, "provider": pid}
+            record_usage(pid, model, data.get("usage") or {})
+            return {"reply": reply, "model": model, "provider": pid,
+                    "usage": data.get("usage") or {}}
         except urllib.error.HTTPError as e:
-            detail = ""
-            try: detail = e.read().decode(errors="replace")[:400]
-            except Exception: pass
+            detail = _err_detail(e)
             low = detail.lower()
             # --- the conversation got too big for this model's context window ---
             if (e.code in (400, 413) and any(s in low for s in (
@@ -1356,12 +1620,17 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
                             new_url = cu; break
                         if new_url and new_url != chat_url:
                             chat_url = new_url
-                            # retry the very same model against the correct host
+                            # retry the very same model against the correct host.
+                            # Reuse the SAME body — rebuilding it from scratch dropped
+                            # max_tokens and reasoning_effort, so the one request that
+                            # went through on the fallback host was uncapped and its
+                            # spend never reached the usage counter.
                             try:
-                                body = {"model": model, "temperature": temperature, "messages": messages}
                                 data = _http_post(chat_url, headers, body)
                                 reply = data["choices"][0]["message"]["content"]
-                                return {"reply": reply, "model": model, "provider": pid}
+                                record_usage(pid, model, data.get("usage") or {})
+                                return {"reply": reply, "model": model, "provider": pid,
+                                        "usage": data.get("usage") or {}}
                             except Exception as e2:
                                 last = f"{model}: retry on {_HOST_OK[pid]} failed: {e2}"
                                 continue
@@ -1382,9 +1651,14 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
             last = f"{model}: {e}"
 
     def _try_fallback(reason):
+        # raw_messages, NOT `messages`: the loop above rebinds `messages` to the
+        # payload trimmed for whichever model failed last, so handing that to another
+        # provider silently sent it a conversation cut down for someone else's context
+        # window. The fallback re-trims for its own models.
         if _fallback_chain:
             nxt_pid, rest = _fallback_chain[0], _fallback_chain[1:]
-            alt = call_model(messages, nxt_pid, temperature, _fallback_chain=rest)
+            alt = call_model(raw_messages, nxt_pid, temperature, _fallback_chain=rest,
+                             tier=tier, max_tokens=max_tokens)
             if not alt.get("error"):
                 alt["fellback_from"] = pid
                 return alt
@@ -1436,19 +1710,49 @@ def replace_first_code_block(reply, new_code):
 # (faster, deeper); otherwise falls back to a built-in ast pass so TheDawg stays
 # zero-dependency and "just works".
 
+_RUFF_PATH = []
+_ANALYSIS_CACHE = {}
+_ANALYSIS_LOCK = threading.Lock()
+
+
 def _ruff_path():
-    import shutil as _sh
-    return _sh.which("ruff")
+    """Resolve ruff once. This is called on every analysis and every autofix, and
+    shutil.which() walks the whole PATH each time."""
+    if not _RUFF_PATH:
+        _RUFF_PATH.append(shutil.which("ruff") or "")
+    return _RUFF_PATH[0] or None
+
+
+def _cached(kind, code, produce):
+    """Memoise an expensive whole-file pass on (kind, source hash).
+
+    One build turn runs ruff over identical bytes three times — autofix checks,
+    autofix applies, then the smoke test analyses. Each is a process spawn.
+    """
+    key = (kind, _code_key(code))
+    with _ANALYSIS_LOCK:
+        if key in _ANALYSIS_CACHE:
+            return _ANALYSIS_CACHE[key]
+    val = produce()
+    with _ANALYSIS_LOCK:
+        if len(_ANALYSIS_CACHE) > 64:
+            _ANALYSIS_CACHE.clear()
+        _ANALYSIS_CACHE[key] = val
+    return val
 
 def analyze_with_ruff(code):
     """Run Ruff's correctness lints (the F/E9 families: undefined names, bad calls,
     unused vars, syntax) and return a list of issue strings. None if Ruff absent."""
+    return _cached("ruff", code, lambda: _analyze_with_ruff_uncached(code))
+
+
+def _analyze_with_ruff_uncached(code):
     ruff = _ruff_path()
     if not ruff:
         return None
     fd, path = tempfile.mkstemp(prefix="thedawg_ruff_", suffix=".py")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(code)
         # F = pyflakes (undefined names, unused imports/vars, redefinitions, f-string bugs)
         # E9 = syntax/runtime-ish errors. We deliberately skip pure-style rules.
@@ -1474,6 +1778,10 @@ def analyze_with_ruff(code):
         except Exception: pass
 
 def autofix_with_ruff(code):
+    return _cached("autofix", code, lambda: _autofix_with_ruff_uncached(code))
+
+
+def _autofix_with_ruff_uncached(code):
     """The 'lint-and-fix' loop every serious AI coding tool runs (aider, etc.):
     if Ruff is present, silently apply its SAFE auto-fixes to generated code before
     the user ever sees it. Only fixes that cannot change behaviour are applied —
@@ -1487,7 +1795,7 @@ def autofix_with_ruff(code):
         return code, []
     fd, path = tempfile.mkstemp(prefix="thedawg_fix_", suffix=".py")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(code)
         sel = ["--select", "F,E9", "--ignore", "F401,F811", "--no-cache"]
         before = subprocess.run([ruff, "check", *sel, "--output-format", "json", path],
@@ -1501,7 +1809,7 @@ def autofix_with_ruff(code):
         if not fixable:
             return code, []
         subprocess.run([ruff, "check", *sel, "--fix", path], capture_output=True, text=True, timeout=20)
-        with open(path) as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             fixed = f.read().rstrip()
         # only accept the fix if it still parses (paranoia — ruff safe fixes always do)
         try:
@@ -1668,10 +1976,28 @@ def analyze_with_ast(code):
     # (building a widget, wiring a signal), so flagging those produces noise. We
     # ONLY flag a variable that is unused AND was assigned a plain literal/name
     # (a value with no side effect) — that's far more likely to be a real mistake.
+    # SCOPING MATTERS HERE. A plain ast.walk() descends into nested class and
+    # function bodies, which made `class App(QWidget): CSS = ...` look like an
+    # unused local of the enclosing function. Class attributes are API, not dead
+    # locals — and since almost every generated GUI tool declares them, that false
+    # positive would have burned a fix round on nearly every build.
+    #
+    # So: collect ASSIGNMENTS from this function's own scope only, but collect
+    # USES from everywhere inside it, because a nested function may close over an
+    # outer local and that absolutely counts as using it.
+    def _own_scope(node):
+        """Nodes belonging to this function's scope, not to a nested one."""
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.ClassDef, ast.Lambda)):
+                continue                     # a scope of its own — skip its body
+            yield child
+            yield from _own_scope(child)
+
     class UnusedVisitor(ast.NodeVisitor):
         def visit_FunctionDef(self, fn):
             assigned, used, simple = {}, set(), set()
-            for n in ast.walk(fn):
+            for n in _own_scope(fn):
                 if isinstance(n, ast.Assign):
                     # is the RHS side-effect-free? (literal, name, tuple/list of those)
                     rhs = n.value
@@ -1682,16 +2008,25 @@ def analyze_with_ast(code):
                             assigned.setdefault(t.id, t.lineno)
                             if is_simple:
                                 simple.add(t.id)
+            # uses come from the WHOLE subtree, closures included
+            for n in ast.walk(fn):
                 if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
                     used.add(n.id)
                 elif isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name):
                     used.add(n.target.id)
+                elif isinstance(n, ast.Nonlocal):
+                    used.update(n.names)
+                elif isinstance(n, ast.Global):
+                    used.update(n.names)
             for name, ln in assigned.items():
                 if name == "_" or name.startswith("_"):
                     continue
                 if name not in used and name in simple:
                     issues.append(f"L{ln} unused: local variable '{name}' assigned but never used")
             self.generic_visit(fn)
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
     UnusedVisitor().visit(tree)
 
     # --- self.<attr> read but never assigned anywhere in the SAME class ---
@@ -1699,7 +2034,8 @@ def analyze_with_ast(code):
     if not star_import:
         issues.extend(_unassigned_self_attrs(tree))
     # --- high-confidence quality findings (silent except: pass, shell injection) ---
-    issues.extend(_extra_safety_findings(tree))
+    issues.extend(_extra_safety_findings(tree) + _signature_findings(tree))
+    issues = _dedupe_issues(issues)
 
     # de-dup and cap so we never flood the model
     seen, uniq = set(), []
@@ -1772,6 +2108,151 @@ def _unassigned_self_attrs(tree):
                            f"__init__, or fix the name)")
     return out
 
+def _dedupe_issues(issues):
+    """Collapse findings that describe the same defect twice.
+
+    The ast clash pass and the signature pass both catch wrong-arity calls, from
+    different angles, and both are worth keeping in general — but reporting one bug
+    twice wastes tokens on every fix round and reads as noise. Two findings about
+    the same function on the same line are the same finding.
+    """
+    import re
+    seen, out = set(), []
+    for msg in issues:
+        m = re.match(r"L(\d+)\s+([a-z-]+):", msg or "")
+        if not m:
+            key = ("raw", (msg or "").strip())
+        else:
+            line, kind = m.group(1), m.group(2)
+            fn = re.search(r"((?:self\.)?[A-Za-z_][\w.]*)\(\)", msg)
+            # arity complaints share one bucket regardless of which pass found them
+            family = "arity" if kind in ("call", "bad-call") else kind
+            key = (line, family, fn.group(1) if fn else "")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(msg)
+    return out
+
+
+def _signature_findings(tree):
+    """Catch the mistakes language models actually make, locally and for free.
+
+    Calling a function with the wrong number of arguments is the single most common
+    way generated code dies at runtime — it parses, it imports, and it blows up the
+    moment that line executes. Every one of these caught here is a paid round-trip
+    to the model that never has to happen, which is why this pass is worth its
+    strictness budget.
+
+    Deliberately conservative. We skip anything whose signature we can't pin down
+    exactly — decorated functions, *args/**kwargs, names that get reassigned — so a
+    finding here is a real bug, not a guess. A false positive costs a wasted fix
+    round, which is exactly what this is meant to prevent.
+    """
+    import ast
+    out = []
+
+    def sig_of(fn, drop_self=False):
+        a = fn.args
+        if a.vararg or a.kwarg or getattr(a, "posonlyargs", None):
+            return None                       # variadic: any arity is legal
+        if fn.decorator_list:
+            return None                       # a decorator may rewrite the signature
+        pos = list(a.args)
+        if drop_self and pos:
+            pos = pos[1:]
+        names = [p.arg for p in pos]
+        ndef = len(a.defaults)
+        required = len(names) - ndef
+        kwonly = [k.arg for k in a.kwonlyargs]
+        kwdefaults = sum(1 for d in a.kw_defaults if d is not None)
+        kwrequired = len(kwonly) - kwdefaults
+        return {"names": names, "required": required, "max": len(names),
+                "kwonly": kwonly, "kwrequired": kwrequired}
+
+    # ---- collect definitions -------------------------------------------------
+    module_fns, methods, classes = {}, {}, {}
+    reassigned = set()
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            for t in ([n.targets] if isinstance(n, ast.Assign) else [[n.target]]):
+                for tt in t:
+                    if isinstance(tt, ast.Name):
+                        reassigned.add(tt.id)
+    for n in tree.body:
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            sg = sig_of(n)
+            if sg:
+                module_fns[n.name] = sg
+        elif isinstance(n, ast.ClassDef):
+            classes[n.name] = n
+            for b in n.body:
+                if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    sg = sig_of(b, drop_self=True)
+                    if sg:
+                        methods.setdefault(n.name, {})[b.name] = sg
+
+    def check(callnode, sg, label):
+        npos = sum(1 for x in callnode.args if not isinstance(x, ast.Starred))
+        if any(isinstance(x, ast.Starred) for x in callnode.args):
+            return
+        if any(k.arg is None for k in callnode.keywords):        # **kwargs at call site
+            return
+        kwnames = [k.arg for k in callnode.keywords]
+        ln = getattr(callnode, "lineno", "?")
+        if npos > sg["max"] and not sg["kwonly"]:
+            out.append(f"L{ln} bad-call: {label} takes at most {sg['max']} positional "
+                       f"argument(s) but is called with {npos}")
+            return
+        supplied = set(sg["names"][:npos]) | set(kwnames)
+        missing = [nm for nm in sg["names"][:sg["required"]] if nm not in supplied]
+        if missing:
+            out.append(f"L{ln} bad-call: {label} is missing required argument(s): "
+                       f"{', '.join(missing)}")
+            return
+        unknown = [k for k in kwnames if k not in sg["names"] and k not in sg["kwonly"]]
+        if unknown:
+            out.append(f"L{ln} bad-call: {label} has no parameter(s) named "
+                       f"{', '.join(unknown)}")
+            return
+        missing_kw = [k for k in sg["kwonly"][:sg["kwrequired"]] if k not in kwnames]
+        if missing_kw:
+            out.append(f"L{ln} bad-call: {label} is missing required keyword argument(s): "
+                       f"{', '.join(missing_kw)}")
+
+    # ---- check call sites ----------------------------------------------------
+    # map each method body back to its class so `self.x()` resolves correctly
+    owner = {}
+    for cname, cnode in classes.items():
+        for b in ast.walk(cnode):
+            owner[id(b)] = cname
+
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        f = n.func
+        if isinstance(f, ast.Name) and f.id in module_fns and f.id not in reassigned:
+            check(n, module_fns[f.id], f"{f.id}()")
+        elif (isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name)
+              and f.value.id == "self"):
+            cname = owner.get(id(n))
+            sg = (methods.get(cname) or {}).get(f.attr) if cname else None
+            if sg:
+                check(n, sg, f"self.{f.attr}()")
+
+    # ---- mutable default arguments ------------------------------------------
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for d in list(n.args.defaults) + [x for x in n.args.kw_defaults if x]:
+                if isinstance(d, (ast.List, ast.Dict, ast.Set)):
+                    ln = getattr(d, "lineno", "?")
+                    out.append(f"L{ln} mutable-default: {n.name}() has a mutable default "
+                               f"argument — it is created once and shared between calls "
+                               f"(use None and build it inside the function)")
+                    break
+    return out
+
+
 def _extra_safety_findings(tree):
     """A small set of HIGH-CONFIDENCE quality findings the system prompt explicitly
     forbids, so the model can clean them up. Engine-independent (used by both the Ruff
@@ -1792,9 +2273,11 @@ def _extra_safety_findings(tree):
     for n in ast.walk(tree):
         # --- 1. silent except: pass ---
         if isinstance(n, ast.ExceptHandler):
+            # drop a docstring-only line, and treat a bare `...` exactly like `pass`
+            # (the docstring always claimed it did; it didn't)
             body = [s for s in n.body if not (isinstance(s, ast.Expr)
                     and isinstance(getattr(s, "value", None), ast.Constant)
-                    and isinstance(s.value.value, str))]   # drop a docstring-only line
+                    and isinstance(s.value.value, (str, type(Ellipsis))))]
             only_pass = all(isinstance(s, ast.Pass) for s in body) and len(body) > 0
             if not body:  # body was just a string/ellipsis expression
                 only_pass = True
@@ -1888,7 +2371,16 @@ def code_map(code):
 
 def analyze_code(code):
     """Whole-code clash analysis. Prefers Ruff, falls back to the ast pass.
-    Returns {"issues": [...], "engine": "ruff"|"ast", "clean": bool}."""
+    Returns {"issues": [...], "engine": "ruff"|"ast", "clean": bool}.
+
+    Cached on the source hash: a single polish round asks for this from the smoke
+    test, from its own deep-read pass and again from the review path, and it is a
+    full AST walk plus a ruff subprocess each time.
+    """
+    return _cached("analyze", code, lambda: _analyze_code_uncached(code))
+
+
+def _analyze_code_uncached(code):
     ruff_issues = analyze_with_ruff(code)
     if ruff_issues is not None:
         # Ruff is fast and deep on style/logic but does NOT track instance attributes.
@@ -1902,7 +2394,8 @@ def analyze_code(code):
             if not any(isinstance(n, _ast.ImportFrom) and any(a.name == "*" for a in n.names)
                        for n in _ast.walk(tree)):
                 supplemental = _unassigned_self_attrs(tree)
-            supplemental = supplemental + _extra_safety_findings(tree)
+            supplemental = _dedupe_issues(
+                supplemental + _extra_safety_findings(tree) + _signature_findings(tree))
         except SyntaxError:
             pass
         merged = ruff_issues + [s for s in supplemental if s not in ruff_issues]
@@ -1910,7 +2403,35 @@ def analyze_code(code):
     ast_issues = analyze_with_ast(code)
     return {"issues": ast_issues, "engine": "ast", "clean": not ast_issues}
 
+# The same script gets smoke-tested by several callers in one turn — the build
+# loop, then the polish round, then a review. Each run spawned an interpreter and
+# re-ran Ruff over identical bytes. Keyed on a hash of the source, so a changed
+# script is never served a stale verdict.
+_SMOKE_CACHE = {}
+_SMOKE_LOCK = threading.Lock()
+_SMOKE_CACHE_MAX = 24
+
+
+def _smoke_key(code):
+    import hashlib
+    return hashlib.sha1(code.encode("utf-8", "replace")).hexdigest()
+
+
 def smoke_test(code):
+    key = _smoke_key(code)
+    with _SMOKE_LOCK:
+        hit = _SMOKE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    result = _smoke_test_uncached(code)
+    with _SMOKE_LOCK:
+        if len(_SMOKE_CACHE) >= _SMOKE_CACHE_MAX:
+            _SMOKE_CACHE.clear()
+        _SMOKE_CACHE[key] = result
+    return result
+
+
+def _smoke_test_uncached(code):
     """Silent quality checks on generated code. Returns (passed, report, checks).
     IMPORTANT: this only checks that the code PARSES and IMPORTS cleanly. It does
     NOT open the window — doing that needs a display and would block. For GUI tools
@@ -1978,6 +2499,10 @@ def smoke_test(code):
         checks.append(("import-safe", True, ""))
 
     # 2. import-ability: load the module WITHOUT running its __main__ block.
+    # Explicit utf-8 everywhere a generated script is written to disk. The default
+    # was the locale codec, so with LANG=C (a systemd unit, a bare tty, a container)
+    # any non-ASCII character in the generated code — and the prompt actively asks
+    # for ✓/• in UI strings — raised UnicodeEncodeError and killed the whole check.
     fd, path = tempfile.mkstemp(prefix="thedawg_test_", suffix=".py")
     # signatures meaning "this box just can't load the GUI" — never a code bug
     ENV_SIGNS = ("Namespace", "not available", "cannot open display", "could not open display",
@@ -1986,7 +2511,7 @@ def smoke_test(code):
                  "qt.qpa.plugin", "no Qt platform plugin", "xcb", "DISPLAY",
                  "_tkinter.TclError", "libGL", "Gdk")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(code)
         harness = (
             "import importlib.util, sys\n"
@@ -2004,8 +2529,15 @@ def smoke_test(code):
             "    sys.exit(7)\n"
         )
         try:
-            proc = subprocess.run([run_python(), "-c", harness],
-                                  capture_output=True, stdin=subprocess.DEVNULL, timeout=20)
+            # Import-check in a deliberately display-less environment. With the real
+            # DISPLAY inherited, a tool whose top-level code touched the toolkit could
+            # flash a window onto the user's desktop during what is supposed to be a
+            # silent background check.
+            senv = dict(os.environ)
+            for var in ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"):
+                senv.pop(var, None)
+            proc = subprocess.run([run_python(), "-c", harness], env=senv,
+                                  capture_output=True, stdin=subprocess.DEVNULL, timeout=12)
             out = proc.stdout.decode("utf-8", errors="replace")
             err = proc.stderr.decode("utf-8", errors="replace")
             blob = out + "\n" + err
@@ -2083,12 +2615,55 @@ def _which(*names):
             return p
     return None
 
+_DISPLAY_LOCK = threading.Lock()
+_DISPLAYS_IN_USE = set()
+
+
 def _free_display():
+    """Reserve a virtual display number nothing else is using.
+
+    Two probes can run at once — the polish round fires one while the user can
+    still press self-test — and both used to scan for a free number with no lock,
+    so both picked the same one and the second Xvfb died on 'server already
+    active'. The number is reserved until _release_display() hands it back.
+    """
     import random
-    for n in range(99, 130):
-        if not os.path.exists(f"/tmp/.X11-unix/X{n}"):
-            return n
-    return random.randint(300, 900)
+    with _DISPLAY_LOCK:
+        for n in range(99, 160):
+            if n in _DISPLAYS_IN_USE:
+                continue
+            if not os.path.exists(f"/tmp/.X11-unix/X{n}"):
+                _DISPLAYS_IN_USE.add(n)
+                return n
+        n = random.randint(300, 900)
+        _DISPLAYS_IN_USE.add(n)
+        return n
+
+
+def _release_display(n):
+    with _DISPLAY_LOCK:
+        _DISPLAYS_IN_USE.discard(n)
+
+
+def _wait_for_x(display, proc, deadline=6.0):
+    """True once Xvfb is actually accepting connections on `display`.
+
+    The old code slept a flat 0.9s and hoped. That was both too long (Xvfb is
+    usually up in ~150ms) and too short on a loaded box — and it never noticed
+    Xvfb dying on startup, so the probe went on to blame the tool for an error
+    that was the display server's.
+    """
+    sock = "/tmp/.X11-unix/X" + display.lstrip(":")
+    waited = 0.0
+    while waited < deadline:
+        if proc is not None and proc.poll() is not None:
+            return False
+        if os.path.exists(sock):
+            time.sleep(0.05)
+            return True
+        time.sleep(0.05)
+        waited += 0.05
+    return os.path.exists(sock)
 
 def _probe_win_geometry(xdo, env, wid):
     try:
@@ -2152,9 +2727,11 @@ def _capture_screenshot(display, out_path):
 
 def _crop_to_window(shot_path, geom):
     """Trim the full grab down to just the tool window (cleaner shot + sharper
-    blank-detection). Best-effort: on any problem, leave the full grab as-is."""
+    blank-detection). Best-effort: on any problem, leave the full grab as-is.
+    Returns True only if the crop really happened — the caller needs to know,
+    because an uncropped grab makes the blank-window verdict worthless."""
     if not geom:
-        return
+        return False
     try:
         from PIL import Image
         x, y, w, h = geom
@@ -2163,10 +2740,11 @@ def _crop_to_window(shot_path, geom):
         W, H = im.size
         right = min(W, x + w); bottom = min(H, y + h)
         if right - x < 8 or bottom - y < 8:
-            return
+            return False
         im.crop((x, y, right, bottom)).save(shot_path)
+        return True
     except Exception:
-        return
+        return False
 
 def _analyze_screenshot(path):
     """Describe what's on screen so a TEXT model can 'see' it: is it blank? what's
@@ -2246,6 +2824,27 @@ def _drive_ui(display):
             break
     return done
 
+def _window_present(display, _xdo_cache=[]):
+    """True once the tool has actually mapped a window on the probe display.
+
+    Polled, so it has to stay cheap: the xdotool path is resolved once rather
+    than on every call, and a failure just means 'not yet'.
+    """
+    if not _xdo_cache:
+        _xdo_cache.append(shutil.which("xdotool") or "")
+    xdo = _xdo_cache[0]
+    if not xdo:
+        return False
+    try:
+        env = dict(os.environ, DISPLAY=display)
+        p = subprocess.run([xdo, "search", "--onlyvisible", "--name", ".*"],
+                           capture_output=True, text=True, timeout=2, env=env,
+                           encoding="utf-8", errors="replace")
+        return p.returncode == 0 and bool((p.stdout or "").strip())
+    except Exception:
+        return False
+
+
 def probe_run(code, name="tool", settle=None, interact=None):
     """Open the GUI on a headless virtual display, watch it, screenshot it, and
     report what happened. Stores the result in LAST_PROBE and the image at SHOT_PATH.
@@ -2273,24 +2872,37 @@ def probe_run(code, name="tool", settle=None, interact=None):
     except Exception:
         pass
     fd, path = tempfile.mkstemp(prefix="thedawg_probe_", suffix=".py")
-    with os.fdopen(fd, "w") as f:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(code)
     errf = tempfile.NamedTemporaryFile(prefix="thedawg_probe_err_", suffix=".log", delete=False)
 
     xvfb = _which("Xvfb"); xv = None; headless = False
     display = os.environ.get("DISPLAY", "")
+    dnum = None
     if xvfb:
-        n = _free_display(); display = f":{n}"
+        dnum = _free_display(); display = f":{dnum}"
         try:
             xv = subprocess.Popen([xvfb, display, "-screen", "0", "1280x900x24", "-nolisten", "tcp"],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            headless = True; time.sleep(0.9)
+            headless = True
+            if not _wait_for_x(display, xv):
+                # Xvfb never came up — don't blame the tool for that
+                try: xv.terminate(); xv.wait(timeout=2)
+                except Exception: pass
+                xv = None; headless = False
+                _release_display(dnum); dnum = None
+                display = os.environ.get("DISPLAY", "")
         except Exception:
-            xv = None; display = os.environ.get("DISPLAY", ""); headless = False
+            xv = None; headless = False
+            if dnum is not None:
+                _release_display(dnum); dnum = None
+            display = os.environ.get("DISPLAY", "")
     if not display:
         for p in (path, errf.name):
             try: os.unlink(p)
             except Exception: pass
+        if dnum is not None:
+            _release_display(dnum)
         res = {"ran": False, "shot": False, "kind": "no-display",
                "report": "No display is available and Xvfb isn't installed, so the window can't be "
                          "opened to look at it. Install Xvfb for headless self-tests:\n"
@@ -2299,7 +2911,20 @@ def probe_run(code, name="tool", settle=None, interact=None):
         LAST_PROBE.clear(); LAST_PROBE.update(res); return res
 
     env = dict(os.environ); env["DISPLAY"] = display
-    env["QT_QPA_PLATFORM"] = "xcb"   # force xcb so Qt tools run under Xvfb
+    if headless:
+        # WAYLAND_DISPLAY was being inherited straight from the user's session, so on
+        # a Wayland desktop (Plasma 6, GNOME) a GTK4 tool ignored DISPLAY entirely,
+        # connected to the REAL compositor, and popped its window onto the user's
+        # actual screen. The Xvfb screenshot then showed an empty root window and the
+        # probe confidently reported "the window renders BLANK" — about a tool that
+        # was rendering perfectly, one screen over. Pin every toolkit to the virtual
+        # X server instead.
+        env.pop("WAYLAND_DISPLAY", None)
+        env.pop("WAYLAND_SOCKET", None)
+        env["GDK_BACKEND"] = "x11"
+        env["QT_QPA_PLATFORM"] = "xcb"
+        env["XDG_SESSION_TYPE"] = "x11"
+        env["SDL_VIDEODRIVER"] = "x11"
     t0 = time.time()
     try:
         proc = subprocess.Popen([interp, path], stdin=subprocess.DEVNULL,
@@ -2310,21 +2935,46 @@ def probe_run(code, name="tool", settle=None, interact=None):
             try: os.unlink(p)
             except Exception: pass
         if xv:
-            try: xv.terminate()
+            try: xv.terminate(); xv.wait(timeout=2)
             except Exception: pass
+        if dnum is not None:
+            _release_display(dnum)
         res = {"ran": False, "shot": False, "kind": "launch-fail",
                "report": f"Couldn't launch the tool to probe it: {e}"}
         LAST_PROBE.clear(); LAST_PROBE.update(res); return res
 
-    time.sleep(settle)
+    # Poll for the window instead of always sleeping the full settle time. A tool
+    # that maps its window in 300 ms used to cost the same 2.4 s as one that takes
+    # two seconds; now it costs 300 ms. The fixed wait stays as the ceiling.
+    _waited = 0.0
+    _step = 0.25
+    while _waited < settle:
+        time.sleep(_step)
+        _waited += _step
+        if _waited >= 0.45 and _window_present(display):
+            # give it one more beat to finish its first paint, then move on
+            time.sleep(0.35)
+            break
     alive = proc.poll() is None
     crashed_on_interact = False; interacted = []
     shot_ok = False; analysis = None
+    # What the probe was ACTUALLY able to do on this box. Without xdotool it can
+    # neither find the window (so the screenshot is the whole virtual screen, and
+    # "is it blank?" becomes meaningless) nor send it any input (so "does it survive
+    # a click?" was never asked). The old report didn't distinguish that from a
+    # passing result and told the model "looks healthy from here" either way.
+    have_xdo = bool(_which("xdotool"))
+    have_pil = True
+    try:
+        import PIL  # noqa: F401
+    except Exception:
+        have_pil = False
+    cropped = False
     if alive:
         geom = _largest_window_geom(display)
         shot_ok = _capture_screenshot(display, SHOT_PATH)
         if shot_ok:
-            _crop_to_window(SHOT_PATH, geom)
+            cropped = _crop_to_window(SHOT_PATH, geom)
             analysis = _analyze_screenshot(SHOT_PATH)
         if interact:
             interacted = _drive_ui(display); time.sleep(0.7)
@@ -2332,7 +2982,7 @@ def probe_run(code, name="tool", settle=None, interact=None):
                 crashed_on_interact = True; alive = False
             geom = _largest_window_geom(display) or geom
             if _capture_screenshot(display, SHOT_PATH):
-                _crop_to_window(SHOT_PATH, geom)
+                cropped = _crop_to_window(SHOT_PATH, geom)
                 shot_ok = True; analysis = _analyze_screenshot(SHOT_PATH)
     rc = proc.poll()
     secs = round(time.time() - t0, 2)
@@ -2351,8 +3001,16 @@ def probe_run(code, name="tool", settle=None, interact=None):
         try: proc.terminate()
         except Exception: pass
     if xv:
-        try: xv.terminate()
-        except Exception: pass
+        # reap it properly — terminate() alone left a zombie Xvfb per self-test,
+        # and on a long polish loop those add up
+        try:
+            xv.terminate()
+            try: xv.wait(timeout=3)
+            except Exception: xv.kill()
+        except Exception:
+            pass
+    if dnum is not None:
+        _release_display(dnum)
     for p in (path, errf.name):
         try: os.unlink(p)
         except Exception: pass
@@ -2360,7 +3018,8 @@ def probe_run(code, name="tool", settle=None, interact=None):
     res = {"ran": True, "shot": shot_ok, "alive": alive, "rc": rc, "secs": secs,
            "headless": headless, "toolkit": tk.get("label") if tk else None,
            "stderr": err.strip(), "analysis": analysis, "interacted": interacted,
-           "crashed_on_interact": crashed_on_interact}
+           "crashed_on_interact": crashed_on_interact,
+           "cropped": cropped, "have_xdotool": have_xdo, "have_pillow": have_pil}
     res["report"] = render_probe_report(res)
     res["ok"] = bool(alive and (not analysis or not analysis.get("blank")))
     LAST_PROBE.clear(); LAST_PROBE.update(res)
@@ -2391,19 +3050,40 @@ def render_probe_report(p):
                      f"Usual causes: widgets never added to a layout / never packed or gridded; a "
                      f"paint/draw routine that never runs; a zero or mis-set geometry; or an "
                      f"exception swallowed inside a setup callback. Make the UI actually populate.")
-        else:
+        elif p.get("cropped"):
             L.append(f"\u2022 SCREENSHOT: a populated window ({a.get('w')}x{a.get('h')}px, "
                      f"{a.get('distinct')} distinct colours, dominant {a.get('dominant')} "
                      f"~{int(a.get('dominant_frac',0)*100)}%) — it renders real content.")
+        else:
+            L.append(f"\u2022 SCREENSHOT: the whole virtual screen ({a.get('w')}x{a.get('h')}px), "
+                     f"NOT cropped to the window — xdotool isn't installed here, so the "
+                     f"blank-window check could not be performed. Do not read this as proof "
+                     f"that the UI renders.")
     elif p.get("alive") and not p.get("shot"):
         L.append("\u2022 SCREENSHOT: none could be captured on this box (no screenshot tool found; "
                  "install imagemagick/maim/scrot for a picture).")
     if p.get("interacted"):
         L.append(f"\u2022 Synthetic interaction sent: {', '.join(p['interacted'])}.")
+    elif p.get("alive"):
+        L.append("\u2022 NOT TESTED: no synthetic input could be sent (xdotool isn't installed), "
+                 "so nothing here says the tool survives being clicked.")
+    if p.get("shot") and not (p.get("analysis") or {}).get("ok"):
+        L.append("\u2022 NOT TESTED: the screenshot could not be analysed (Pillow isn't "
+                 "installed), so the blank-window check did not run.")
     if p.get("stderr"):
         L.append("\n--- the tool's own stderr / traceback ---\n" + p["stderr"][-2500:])
-    if p.get("alive") and not (a.get("ok") and a.get("blank")) and not p.get("stderr"):
-        L.append("\u2022 Net: it launches clean and renders content. Looks healthy from here.")
+    if p.get("alive") and not p.get("stderr"):
+        # Only claim health for the things that were genuinely checked.
+        verified = ["it starts and stays open"]
+        if p.get("cropped") and a.get("ok") and not a.get("blank"):
+            verified.append("the window renders real content")
+        if p.get("interacted"):
+            verified.append("it survives synthetic input")
+        L.append("\u2022 Net: " + ", ".join(verified) + ". "
+                 + ("Looks healthy from here."
+                    if len(verified) == 3 else
+                    "The rest of the runtime checks could not run on this box — treat "
+                    "anything not listed as unverified, not as passing."))
     return "\n".join(L)
 
 
@@ -2441,7 +3121,7 @@ def chat_with_autotest(messages, provider_id=None):
     rounds = []
     # Lower temperature on code generation: more deterministic, fewer hallucinated
     # APIs and careless slips. Reasoning paths (intake/review) keep the default 0.3.
-    res = call_model(convo, provider_id, temperature=BUILD_TEMPERATURE)
+    res = call_model(convo, provider_id, temperature=BUILD_TEMPERATURE, tier="build")
     if res.get("error"):
         return res
 
@@ -2484,18 +3164,13 @@ def chat_with_autotest(messages, provider_id=None):
                    f"=== problems found ===\n{report}\n")
         if cmap:
             fix_msg += f"\n=== structure of the code you just wrote (keep calls consistent) ===\n{cmap}\n"
-        fix_msg += ("\nDo not introduce new problems. Re-check that every function is called with "
-                    "the right arguments and every name is defined before use. Quick pass on the "
-                    "usual Linux-GUI traps: any widget a thread/callback touches is stored on self; "
-                    "thread results marshalled back to the GUI thread (widget.after / signals, never "
-                    "a direct widget call from a worker); the toolkit import wrapped so a missing "
-                    "toolkit shows a clear message, not a traceback; no bare except: pass; no "
-                    "shell=True on a built command; encoding=\"utf-8\" on text I/O.")
+        fix_msg += ("\nFix only what is listed. Re-check every call's arguments and that every "
+                    "name is defined before use. Return the whole file.")
         convo = convo + [
             {"role": "assistant", "content": res["reply"]},
             {"role": "user", "content": fix_msg},
         ]
-        nxt = call_model(convo, provider_id, temperature=BUILD_TEMPERATURE)
+        nxt = call_model(convo, provider_id, temperature=BUILD_TEMPERATURE, tier="build")
         if nxt.get("error"):
             res["autotest"] = {"ran": True, "passed": False, "rounds": rounds,
                                "note": "auto-fix call failed: " + nxt["error"]}
@@ -2519,7 +3194,7 @@ def review_code(code, provider_id=None):
         {"role": "system", "content": REVIEW_PROMPT},
         {"role": "user", "content":
             f"Here is the tool to review:\n```python\n{code}\n```\n\n{analyzer_block}"},
-    ], provider_id)
+    ], provider_id, tier="build", max_tokens=3000)
     if res.get("error"):
         return res
     parsed = _parse_json_reply(res.get("reply", ""))
@@ -2552,7 +3227,7 @@ def _parse_json_reply(reply):
 def make_intake(request, provider_id=None):
     """Ask the model for a tailored, clickable question set for a tool request."""
     res = call_model([{"role": "system", "content": INTAKE_PROMPT},
-                      {"role": "user", "content": request}], provider_id)
+                      {"role": "user", "content": request}], provider_id, tier="cheap")
     if res.get("error"):
         return res
     parsed = _parse_json_reply(res.get("reply", ""))
@@ -2588,7 +3263,7 @@ def structure_followup(reply, convo, provider_id=None):
         {"role": "system", "content": FOLLOWUP_PROMPT},
         {"role": "user", "content":
             user_blob + "The assistant's message to turn into options:\n" + text[:2500]},
-    ], provider_id)
+    ], provider_id, tier="cheap")
     if res.get("error"):
         return {"questions": []}   # never block the build on the optional helper failing
     parsed = _parse_json_reply(res.get("reply", "")) or {}
@@ -2611,7 +3286,7 @@ def make_github(code, details, provider_id=None):
     res = call_model([{"role": "system", "content": GITHUB_PROMPT},
                       {"role": "user", "content":
                        f"Repo details:\n{detail_blob}\n\n=== FINAL CODE ===\n```python\n{code}\n```"}],
-                     provider_id)
+                     provider_id, tier="cheap", max_tokens=4000)
     if res.get("error"):
         return res
     parsed = _parse_json_reply(res.get("reply", "")) or {}
@@ -2690,7 +3365,7 @@ def run_code(code, args, confirmed, name="tool"):
     # unique temp file per run so concurrent/rapid runs can't clobber each other.
     # GUI launches keep their file alive until the window closes (cleaned up by _reap).
     fd, path = tempfile.mkstemp(prefix="thedawg_", suffix=".py")
-    with os.fdopen(fd, "w") as f:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(code)
 
     # ----- GUI tool: LAUNCH it (don't block on the window) -----------------
@@ -2722,8 +3397,20 @@ def run_code(code, args, confirmed, name="tool"):
             except Exception: pass
             return {"stdout": "", "stderr": f"Could not launch: {e}", "exit": -1, "seconds": 0}
 
-        time.sleep(1.8)
-        rc = proc.poll()
+        # Watch for an early death instead of always burning a flat 1.8s on the
+        # ▶ launch button. A tool that fails to import is reported in ~150ms now;
+        # a tool that comes up healthy is confirmed at ~0.9s instead of 1.8s. The
+        # old ceiling stays as the ceiling for anything slower to fall over.
+        rc = None
+        waited = 0.0
+        while waited < 1.8:
+            time.sleep(0.05)
+            waited += 0.05
+            rc = proc.poll()
+            if rc is not None:
+                break
+            if waited >= 0.9 and os.path.getsize(errf.name) == 0:
+                break   # alive, silent, past the window where import errors land
         try:
             errf.flush(); errf.close()
             with open(errf.name, "rb") as ef:
@@ -2871,20 +3558,69 @@ LICENSES = {
             "SOFTWARE.\n"),
 }
 
+_SH_SAFE = re.compile(r"[^A-Za-z0-9_./+@\-]")
+
+
+def shell_safe(value, default="", maxlen=120):
+    """Strip anything that could break out of a double-quoted shell string.
+
+    `install.sh` is assembled by string interpolation and then PUBLISHED — other
+    people curl|bash it. Three of the values going into it were never checked:
+    the GitHub username and branch come straight from a text field, and the pip
+    dependency list is whatever the MODEL put in requirements.txt. A quote, a
+    backtick or a `$(...)` in any of them lands as live shell in someone else's
+    installer. Nothing legitimate here needs a character outside this set.
+    """
+    cleaned = _SH_SAFE.sub("", str(value or ""))[:maxlen].strip("-")
+    return cleaned or default
+
+
+# A pip requirement legitimately contains characters the identifier filter above
+# strips — `requests>=2.31`, `uvicorn[standard]`, `numpy!=1.24.0`. Those are only
+# dangerous UNQUOTED, so the generated installer puts them in a bash array with
+# every element quoted (see _install_sh) and this filter just keeps out the
+# characters that would end a double-quoted string or start a substitution.
+_PIP_SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+\-]*(?:\[[A-Za-z0-9,._\-]+\])?"
+                       r"(?:\s*[=!~<>]=?\s*[0-9A-Za-z.\-*+]+)?$")
+
+
+def pip_safe(tokens):
+    """Keep only tokens that look like a real pip requirement. Anything else —
+    a shell fragment the model slipped into requirements.txt, a stray quote — is
+    dropped rather than escaped, because a mangled package name is a confusing
+    install error and a dropped one is simply absent."""
+    out = []
+    for tok in (tokens or "").split():
+        tok = tok.strip()
+        if tok and len(tok) <= 100 and _PIP_SAFE.match(tok) and tok not in out:
+            out.append(tok)
+    return out
+
+
 def _install_sh(user, repo, branch, name, pip_deps=""):
     """POSIX installer (Linux + macOS) — one-line install/update over HTTPS:
        curl -fsSL https://raw.githubusercontent.com/<user>/<repo>/<branch>/install.sh | bash
     Installs the script under ~/.local/share/<repo>, a CLI launcher on PATH, and on
     Linux a .desktop entry. Installs pip deps with --user fallbacks."""
+    user = shell_safe(user, "USER")
+    repo = shell_safe(repo, "tool")
+    branch = shell_safe(branch, "main")
+    name = shell_safe(name, "tool")
+    # Each requirement is validated on its own and then emitted as a QUOTED array
+    # element. The old script built one unquoted "$PIP_PKGS" word-split, so a
+    # perfectly ordinary `requests>=2.31` was read by the shell as a redirection
+    # and wrote a file called `=2.31` instead of installing anything.
+    pkgs = pip_safe(pip_deps)
     pip_line = ""
-    if pip_deps.strip():
+    if pkgs:
+        arr = " ".join('"%s"' % p for p in pkgs)
         pip_line = f'''
 # install the python deps this tool needs
-PIP_PKGS="{pip_deps.strip()}"
-echo "installing python deps: $PIP_PKGS"
-python3 -m pip install --user $PIP_PKGS --break-system-packages 2>/dev/null \\
-  || python3 -m pip install --user $PIP_PKGS \\
-  || echo "WARN: pip install failed for: $PIP_PKGS — install manually"
+PIP_PKGS=({arr})
+echo "installing python deps: ${{PIP_PKGS[*]}}"
+python3 -m pip install --user "${{PIP_PKGS[@]}}" --break-system-packages 2>/dev/null \\
+  || python3 -m pip install --user "${{PIP_PKGS[@]}}" \\
+  || echo "WARN: pip install failed for: ${{PIP_PKGS[*]}} — install manually"
 '''
     return f"""#!/usr/bin/env bash
 # {repo} installer (Linux / macOS) — one-line install/update:
@@ -2947,11 +3683,14 @@ def write_github_repo(code, name, gh, details):
     Includes install.sh (Linux, curl|bash) so a release installs cleanly on Kali
     (KDE Plasma) and other Linux desktops, under Wayland or X11."""
     name = re.sub(r"[^A-Za-z0-9_\-]", "_", (name or "tool")).strip("_") or "tool"
-    user = details.get("username", "USER")
-    repo = re.sub(r"[^A-Za-z0-9_.\-]", "-", details.get("repo", name)) or name
-    branch = details.get("branch", "main")
+    # Sanitised at the boundary: every one of these is interpolated into files
+    # that get published, and two of them into a shell script.
+    user = shell_safe(details.get("username"), "USER")
+    repo = re.sub(r"[^A-Za-z0-9_.\-]", "-", details.get("repo") or name) or name
+    branch = shell_safe(details.get("branch"), "main")
     license_name = details.get("license", "MIT")
-    holder = details.get("holder", user)
+    holder = (str(details.get("holder") or user).replace("\n", " ")
+              .replace("\r", " ").strip()[:120] or user)
 
     d = tools_dir() / "github" / repo
     d.mkdir(parents=True, exist_ok=True)
@@ -3003,11 +3742,15 @@ def write_github_repo(code, name, gh, details):
 
     # .desktop entry — for Linux users to drop into ~/.local/share/applications.
     # StartupWMClass helps KDE/GNOME bind the running window to this entry's icon.
+    # a .desktop file is line-oriented: a newline in the model's description
+    # silently truncates the entry and the launcher stops working
+    comment = " ".join(str(gh.get("description")
+                           or (repo + " — built with TheDawg")).split())[:200]
     desktop = (
         "[Desktop Entry]\n"
         "Type=Application\n"
         f"Name={name}\n"
-        f"Comment={gh.get('description', repo + ' — built with TheDawg')}\n"
+        f"Comment={comment}\n"
         f"Exec=python3 %h/.local/share/{repo}/{name}.py\n"
         "Terminal=false\n"
         f"StartupWMClass={name}\n"
@@ -3046,6 +3789,33 @@ def write_github_repo(code, name, gh, details):
 # TheDawg builds a single-file binary for Linux via PyInstaller in its managed
 # venv. (No cross-compilation: PyInstaller bakes the host Python + libs into the
 # output, so a binary built here runs on Linux only — which is the target.)
+def _missing_in_venv(venv_py, pkgs):
+    """Which of `pkgs` the venv can't already import. One interpreter start, not one
+    per package, and no network at all."""
+    if not pkgs:
+        return []
+    probe = (
+        "import importlib.util,sys\n"
+        "names={'pyinstaller':'PyInstaller','pillow':'PIL','pyyaml':'yaml',"
+        "'beautifulsoup4':'bs4','python-dateutil':'dateutil'}\n"
+        "out=[]\n"
+        "for p in sys.argv[1:]:\n"
+        "    m=names.get(p.lower(), p.replace('-','_'))\n"
+        "    try:\n"
+        "        if importlib.util.find_spec(m) is None: out.append(p)\n"
+        "    except Exception: out.append(p)\n"
+        "print('\\n'.join(out))\n"
+    )
+    try:
+        r = subprocess.run([venv_py, "-c", probe, *pkgs], capture_output=True,
+                           text=True, timeout=60, encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            return list(pkgs)
+        return [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+    except Exception:
+        return list(pkgs)
+
+
 def build_executable(code, name, console=False):
     """Run PyInstaller in TheDawg's managed venv to produce a single-file Linux
     binary. Returns the path to the artefact + a tail of the build log."""
@@ -3068,12 +3838,21 @@ def build_executable(code, name, console=False):
     # actually find them when it sniffs the script
     deps = detect_deps(code)
     pip_to_install = ["pyinstaller"] + [p for p in deps["pip"] if p]
+    # `--upgrade` forced a full PyPI resolve of PyInstaller and every dependency on
+    # EVERY build, which is minutes of network on a repeat build that needed none of
+    # it. Install only what's missing, and let uv do it when it's on PATH — the same
+    # policy install_deps() already uses.
     try:
-        proc = subprocess.run([venv_py, "-m", "pip", "install", "--upgrade", *pip_to_install],
-                              capture_output=True, text=True, timeout=900,
-                              encoding="utf-8", errors="replace")
-        if proc.returncode != 0:
-            return {"ok": False, "log": "pip install failed:\n" + (proc.stderr or proc.stdout)[-2000:]}
+        missing = _missing_in_venv(venv_py, pip_to_install)
+        if missing:
+            uv = shutil.which("uv")
+            cmd = ([uv, "pip", "install", "--python", venv_py, *missing] if uv else
+                   [venv_py, "-m", "pip", "install", "--disable-pip-version-check",
+                    "--no-input", *missing])
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900,
+                                  encoding="utf-8", errors="replace")
+            if proc.returncode != 0:
+                return {"ok": False, "log": "pip install failed:\n" + (proc.stderr or proc.stdout)[-2000:]}
     except Exception as e:
         return {"ok": False, "log": f"pip install error: {e}"}
 
@@ -3092,7 +3871,10 @@ def build_executable(code, name, console=False):
     # 3) build args: --onefile bakes everything into one binary, --windowed drops the
     #    controlling console for GUI tools, --clean wipes PyInstaller's cache so
     #    re-builds always reflect the latest code
-    args = [venv_py, "-m", "PyInstaller", "--onefile", "--clean", "--noconfirm",
+    # `--clean` wiped PyInstaller's analysis cache before every build, so each
+    # rebuild of the same tool paid the full cold-build cost. The work dir is
+    # per-tool and PyInstaller re-analyses changed sources anyway.
+    args = [venv_py, "-m", "PyInstaller", "--onefile", "--noconfirm",
             "--name", name,
             "--distpath", str(dist_dir),
             "--workpath", str(build_dir),
@@ -3129,12 +3911,25 @@ def build_executable(code, name, console=False):
 # --------------------------------------------------------------------------
 SESSION_LOG = []   # list of dicts: {ts, kind, name, args, exit, seconds, stdout, stderr}
 
+_LOG_ENTRY_MAX = 20000     # per stream, per run
+
+
 def log_run(name, args, result):
+    # Cap each stream. The list was bounded at 40 entries but a single chatty tool
+    # could put megabytes into one of them, which then rode along in every fix
+    # round's prompt and in memory for the rest of the session.
+    def _clip(s):
+        s = s or ""
+        if len(s) <= _LOG_ENTRY_MAX:
+            return s
+        head = _LOG_ENTRY_MAX // 4
+        return (s[:head] + f"\n…[{len(s) - _LOG_ENTRY_MAX} chars trimmed by TheDawg]…\n"
+                + s[-(_LOG_ENTRY_MAX - head):])
     SESSION_LOG.append({
         "ts": time.strftime("%H:%M:%S"),
         "name": name, "args": args,
         "exit": result.get("exit"), "seconds": result.get("seconds"),
-        "stdout": result.get("stdout", ""), "stderr": result.get("stderr", ""),
+        "stdout": _clip(result.get("stdout")), "stderr": _clip(result.get("stderr")),
     })
     # keep it bounded so we never blow the context window
     if len(SESSION_LOG) > 40:
@@ -3180,22 +3975,66 @@ def fix_from_log(code, messages, provider_id=None):
     return chat_with_autotest(convo, provider_id)
 
 def polish_round(code, messages, provider_id=None):
-    """One iteration of the auto-polish loop. Before asking the model to improve the
-    tool, TheDawg actually TESTS it: a static smoke test AND a runtime probe that
-    opens the window, screenshots it, checks it isn't blank, and pokes it to surface
-    click-crashes. Any real failure observed is handed to the model as the #1 thing
-    to fix — so polish hunts genuine bugs instead of just gold-plating."""
-    # 1) static smoke
-    passed, report, _ = smoke_test(code)
-    # 2) runtime probe (opens the real window headlessly and looks at it)
-    probe = probe_run(code, name="tool")
+    """One iteration of the auto-polish loop.
 
+    Polish is not gold-plating. Before the model is allowed to change anything,
+    TheDawg gathers hard evidence about the tool as it actually is:
+
+      1. STATIC SMOKE  — completeness, syntax, import-safety.
+      2. DEEP READ     — the full analyzer over the source: undefined names, wrong
+                         call signatures, self-attributes never assigned, silent
+                         excepts, shell injection, mutable defaults. This is the
+                         "read the code and see what's wrong" pass, and every
+                         finding carries a line number so the fix can be surgical.
+      3. RUNTIME PROBE — opens the real window on a hidden display, screenshots it,
+                         checks it isn't blank, and pokes it to surface crashes that
+                         only happen on interaction.
+      4. STRUCTURE MAP — the tool's own function/method signatures, so a fix can't
+                         quietly break a call site somewhere else in the file.
+
+    2 and 3 are independent, so they run at the same time; the probe is the slow
+    one and the read is free, which makes the whole round cost about what the probe
+    alone used to.
+
+    Everything found is handed over as an ordered work list. Only when the evidence
+    is genuinely clean does the model get to improve anything.
+    """
+    # --- gather evidence concurrently ------------------------------------
+    results = {}
+
+    def _static():
+        try:
+            results["smoke"] = smoke_test(code)
+            results["analysis"] = analyze_code(code)
+        except Exception as e:                       # never claim health we didn't verify
+            results["static_error"] = f"{type(e).__name__}: {e}"
+
+    def _runtime():
+        try:
+            results["probe"] = probe_run(code, name="tool")
+        except Exception as e:
+            results["probe_error"] = f"{type(e).__name__}: {e}"
+
+    threads = [threading.Thread(target=_static, daemon=True),
+               threading.Thread(target=_runtime, daemon=True)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=180)
+
+    # If a check didn't complete we say so rather than defaulting to "fine".
+    static_ran = "smoke" in results
+    passed, report, _checks = results.get("smoke", (True, "", []))
+    analysis = results.get("analysis") or {"issues": [], "engine": "none", "clean": True}
+    probe = results.get("probe") or {"ran": False}
+
+    # --- turn the evidence into an ordered work list ----------------------
     problems = []
     if probe.get("ran"):
         if probe.get("crashed_on_interact"):
             problems.append("CRITICAL: the window opens but CRASHES on interaction "
                             "(a keypress/click kills it). Fix the failing callback — "
-                            "traceback is in the probe report.")
+                            "the traceback is in the probe report below.")
         elif probe.get("alive") is False:
             problems.append("CRITICAL: the tool CRASHES on startup — the window does not "
                             "stay open. Fix the startup error (traceback in the probe report).")
@@ -3207,37 +4046,76 @@ def polish_round(code, messages, provider_id=None):
     if not passed:
         problems.append("It fails a static check:\n" + report)
 
+    # the deep read — these are concrete defects with line numbers, not opinions
+    found = [i for i in (analysis.get("issues") or [])]
+    if found:
+        problems.append("Reading the code itself turned up these defects "
+                        f"({analysis.get('engine', 'analysis')}). Each has a line number — "
+                        "fix them exactly, don't rewrite around them:\n  - "
+                        + "\n  - ".join(found[:14]))
+
     log_blob = render_log(full=False) if SESSION_LOG else "(no manual runs yet)"
     probe_section = ""
     if probe.get("ran"):
         probe_section = ("\n\n=== RUNTIME PROBE (TheDawg opened the window and looked) ===\n"
                          + probe.get("report", ""))
+    cmap = code_map(code)
+    map_section = ("\n\n=== YOUR OWN STRUCTURE (keep every call site consistent with this) ===\n"
+                   + cmap) if cmap else ""
+
+    if not static_ran:
+        # be honest in the prompt about what we actually managed to check
+        problems.append("NOTE: TheDawg's static analysis did not complete this round "
+                        f"({results.get('static_error', 'unknown error')}), so treat the "
+                        "code as unverified and re-read it carefully yourself.")
 
     if problems:
         directive = (
-            "TheDawg tested this tool and found real problems. FIX THESE FIRST, in order, "
-            "before anything else:\n\n- " + "\n- ".join(problems) +
-            "\n\nReturn the FULL corrected script. After fixing the above, you may make one "
-            "small additional robustness improvement, but the priority is making the tool "
-            "actually run and render correctly. One line on what you changed."
+            "TheDawg tested this tool AND read its source. Real defects were found. "
+            "FIX THESE FIRST, in this order, before anything else:\n\n- "
+            + "\n- ".join(problems) +
+            "\n\nWork through them one at a time against the line numbers given. Do not "
+            "restructure the program to avoid a fix, and do not add features this round — "
+            "a tool that works beats a tool with more in it. Return the FULL corrected "
+            "script and one line on what you changed."
         )
     else:
+        # Nothing measurable is wrong, so make the model look properly before it
+        # touches anything. Without this it reaches for a new feature every time.
         directive = (
-            "TheDawg tested this tool: it passes the static smoke test and the runtime probe "
-            "(window opens, stays up, renders real content, survives interaction). Since it's "
-            "healthy, improve it by ONE meaningful increment — harden an edge case, improve "
-            "output clarity, or add the single most valuable missing feature — but keep it ONE "
-            "self-contained script and don't over-engineer. Return the FULL improved script and "
-            "one line on what you changed."
+            "TheDawg tested this tool and read its source: it passes the static checks, the "
+            "analyzer found no defects, and the runtime probe shows a window that opens, "
+            "stays up, renders real content and survives interaction.\n\n"
+            "So before changing anything, READ YOUR OWN CODE and look for what the automated "
+            "checks cannot see:\n"
+            "  - a path through the program that silently does nothing\n"
+            "  - an error the user would never find out about\n"
+            "  - a value assumed valid that came from outside (a file, a field, a subprocess)\n"
+            "  - work on the UI thread that would freeze the window on a big input\n"
+            "  - a state the UI can get into that it cannot get out of\n\n"
+            "If you find something real, fix THAT and say what it was. Only if the code is "
+            "genuinely sound should you add the single most valuable missing thing. Either "
+            "way keep it ONE self-contained script, do not over-engineer, and return the FULL "
+            "script with one line on what you changed."
         )
 
     convo = [{"role": "system", "content": SYSTEM_PROMPT}, {
         "role": "user",
         "content": (directive +
                     f"\n\n=== CODE ===\n```python\n{code}\n```\n\n"
-                    f"=== RECENT RUNS ===\n{log_blob}" + probe_section)
+                    f"=== RECENT RUNS ===\n{log_blob}" + probe_section + map_section)
     }]
-    return chat_with_autotest(convo, provider_id)
+    res = chat_with_autotest(convo, provider_id)
+    # let the UI show what this round was actually reacting to
+    res["evidence"] = {
+        "smoke_passed": passed,
+        "defects": found[:14],
+        "engine": analysis.get("engine"),
+        "probe_ran": bool(probe.get("ran")),
+        "probe_alive": probe.get("alive"),
+        "problems": len(problems),
+    }
+    return res
 
 # ==========================================================================
 # http
@@ -3294,9 +4172,41 @@ class Handler(BaseHTTPRequestHandler):
     # every response sets Content-Length, so keep-alive is safe
     server_version = "TheDawg"
     sys_version = ""
+    # this belongs on the request handler, not on the server class — it was being
+    # set on ThreadingHTTPServer, where socketserver never reads it, so every small
+    # loopback response was still waiting on Nagle's algorithm for nothing
+    disable_nagle_algorithm = True
 
     def log_message(self, *a):  # quiet
         pass
+
+    # ---------------------------------------------------------------- guards --
+    def _same_origin(self):
+        """Reject requests a *website* made on the user's behalf.
+
+        127.0.0.1 is not a security boundary in a browser: any page the user has
+        open can POST to this port. /api/run executes arbitrary Python as the user,
+        so an unguarded API here is a drive-by code-execution hole — the danger-
+        pattern scan doesn't help, because the attacker also controls `confirm`.
+
+        Two checks close it. Sec-Fetch-Site is set by the browser itself and cannot
+        be forged from script. Origin must match our own host when it is present;
+        a cross-site <form> post can't set Origin and can't send a JSON content
+        type either, which is why _wants_json() below is part of the same lock.
+        """
+        site = (self.headers.get("Sec-Fetch-Site") or "").lower()
+        if site and site not in ("same-origin", "same-site", "none"):
+            return False
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin:
+            host = (self.headers.get("Host") or "").strip()
+            if origin not in (f"http://{host}", f"https://{host}"):
+                return False
+        return True
+
+    def _wants_json(self):
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        return ctype in ("", "application/json")
 
     def _accepts_gzip(self):
         return "gzip" in (self.headers.get("Accept-Encoding") or "")
@@ -3347,7 +4257,29 @@ class Handler(BaseHTTPRequestHandler):
                    extra={"ETag": etag, "Cache-Control": cache},
                    gz=_static_gzip(path))
 
+    # Any exception raised below used to escape into BaseHTTPRequestHandler, which
+    # closes the connection without a response — the UI saw a bare network error and
+    # showed nothing at all. `/api/stop` with a non-numeric pid did exactly that.
+    # Now every route runs inside a net that answers with a readable JSON error.
     def do_GET(self):
+        try:
+            self._do_get()
+        except Exception as e:
+            self._fail(e)
+
+    def do_POST(self):
+        try:
+            self._do_post()
+        except Exception as e:
+            self._fail(e)
+
+    def _fail(self, exc):
+        try:
+            self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
+        except Exception:
+            pass
+
+    def _do_get(self):
         # Strip the query string before routing. Every branch below compares
         # against a bare path, so a single "?native=1" was enough to 404 the
         # whole app — which is exactly what the native shell appends.
@@ -3430,6 +4362,7 @@ class Handler(BaseHTTPRequestHandler):
                 "version": __version__,
                 "desktop": detect_desktop_env(),
                 "distro": DISTRO,
+                "usage": usage_summary(),
                 "native": NATIVE_SHELL.get("active", False),
                 "shell": NATIVE_SHELL.get("kind", ""),
             })
@@ -3458,14 +4391,23 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, {"error": "not found"})
 
-    def do_POST(self):
+    def _do_post(self):
         self.path = self.path.split("?", 1)[0] or "/"
-        length = int(self.headers.get("Content-Length", 0))
+        if not (self._same_origin() and self._wants_json()):
+            return self._send(403, {"error": "cross-site request refused"})
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self._send(400, {"error": "bad content-length"})
+        if length < 0 or length > 64 * 1024 * 1024:
+            return self._send(413, {"error": "payload too large"})
         raw = self.rfile.read(length) if length else b"{}"
         try:
-            data = json.loads(raw.decode() or "{}")
+            data = json.loads(raw.decode("utf-8", "replace") or "{}")
         except Exception:
             return self._send(400, {"error": "bad json"})
+        if not isinstance(data, dict):
+            return self._send(400, {"error": "expected a json object"})
 
         if self.path == "/api/key":
             pid = data.get("provider") or STATE["provider"]
@@ -3524,7 +4466,11 @@ class Handler(BaseHTTPRequestHandler):
                 log_run(data.get("name", "tool"), data.get("args", ""), result)
             self._send(200, result)
         elif self.path == "/api/stop":
-            self._send(200, stop_running(int(data.get("pid", 0) or 0)))
+            try:
+                pid = int(data.get("pid") or 0)
+            except (TypeError, ValueError):
+                return self._send(200, {"ok": False, "error": "bad pid"})
+            self._send(200, stop_running(pid))
         elif self.path == "/api/probe":
             # TheDawg self-test: open the window headlessly, screenshot it, poke it,
             # and report what it saw. Also logged so "send log to AI" has context.
@@ -3542,7 +4488,8 @@ class Handler(BaseHTTPRequestHandler):
                 verdict = "self-test: " + (p.get("kind") or "could not run")
             log_run(data.get("name", "tool"), "(self-test)",
                     {"ok": p.get("ok", False), "stdout": verdict,
-                     "stderr": p.get("stderr", "")})
+                     "stderr": p.get("stderr", ""),
+                     "exit": p.get("rc"), "seconds": p.get("secs")})
             self._send(200, {
                 "ran": p.get("ran", False), "shot": p.get("shot", False),
                 "alive": p.get("alive"), "rc": p.get("rc"), "secs": p.get("secs"),
@@ -3628,11 +4575,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
 
 def free_port(host, start):
+    """Find a port we can actually BIND.
+
+    The old check dialled the port and called it free when nothing answered, which
+    isn't the same question: a socket bound to another interface, or one in a state
+    that refuses connections but still holds the port, would pass the test and then
+    blow up with 'Address already in use' at startup. Bind-and-release answers the
+    question that matters.
+    """
     for p in range(start, start + 40):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.15)
-            if s.connect_ex((host, p)) != 0:
-                return p
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((host, p))
+            return p
+        except OSError:
+            continue
     return start
 
 
@@ -3838,9 +4796,18 @@ def main():
 
     ThreadingHTTPServer.daemon_threads = True
     ThreadingHTTPServer.request_queue_size = 64
-    # small responses shouldn't wait on Nagle's algorithm — this is a loopback UI
-    ThreadingHTTPServer.disable_nagle_algorithm = True
-    srv = ThreadingHTTPServer((HOST, port), Handler)
+    srv = None
+    for attempt in range(20):
+        try:
+            srv = ThreadingHTTPServer((HOST, port), Handler)
+            break
+        except OSError:
+            # something grabbed the port between the check and the bind — step on
+            port = free_port(HOST, port + 1)
+    if srv is None:
+        print(f"\n  couldn't bind a port near {start_port}. Try: thedawg --port 9000\n")
+        return
+    url = f"http://{HOST}:{port}"
 
     print(f"\n  TheDawg v{__version__}  —  {url}")
     print(f"  {DISTRO['pretty']}  ·  {detect_desktop_env()['raw'] or 'desktop'} "
@@ -3848,11 +4815,11 @@ def main():
     have = [PROVIDERS[pid]["label"] for pid in PROVIDERS if STATE["keys"].get(pid)]
     if have:
         print(f"  keys loaded for: {', '.join(have)}")
-        def _warm():
-            for pid in PROVIDERS:
-                if STATE["keys"].get(pid):
-                    fetch_models(pid, force=True)
-        threading.Thread(target=_warm, daemon=True).start()
+        # one thread per provider: a provider that is slow or unreachable used to
+        # hold up the model list for every other one behind it (20s timeout each)
+        for _pid in [p for p in PROVIDERS if STATE["keys"].get(p)]:
+            threading.Thread(target=fetch_models, args=(_pid,),
+                             kwargs={"force": True}, daemon=True).start()
     else:
         print("  no API keys yet — add one in Settings")
     print(f"  active provider: {PROVIDERS[STATE['provider']]['label']}")
