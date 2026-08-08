@@ -52,7 +52,7 @@ import urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "2.2.3"
+__version__ = "2.3.1"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --------------------------------------------------------------------------
@@ -1312,6 +1312,15 @@ def record_usage(pid, model, usage):
         m["in"] += pin; m["out"] += pout; m["calls"] += 1
 
 
+def edit_summary():
+    """How much the targeted-edit path is actually saving, for /api/status."""
+    a, f, s = EDIT_STATS["applied"], EDIT_STATS["fallbacks"], EDIT_STATS["salvaged"]
+    return {"applied": a, "fallbacks": f, "salvaged": s, "retries": EDIT_STATS["retries"],
+            "off": EDIT_STATS["off"],
+            "hit_rate": round(a / max(1, a + f + s), 2),
+            "output_tokens_saved": int(EDIT_STATS["saved_chars"] / 3.6)}
+
+
 def usage_summary():
     """Totals plus an estimated cost, for the UI and the CLI."""
     with _USAGE_LOCK:
@@ -1400,6 +1409,27 @@ def trim_history(messages, model=None):
                 collapsed = _CODE_FENCE.sub("`[earlier version of the code — superseded by the latest below]`",
                                             m["content"])
                 body[i] = {"role": m["role"], "content": collapsed}
+
+    # ---- stage 1b: collapse OLD attached files -------------------------------
+    # A reference file the user dropped in — a sample CSV, a log, an existing
+    # script — is embedded in that user message and was then resent verbatim on
+    # every single turn for the rest of the session. A 60k-token sample file
+    # dwarfed everything else in the payload and never stopped costing.
+    #
+    # Only ever collapsed once the tool actually exists in the conversation (so a
+    # file loaded to work ON is never taken away before the model has read it),
+    # and never the most recent user turn, which may be an attachment sent just now.
+    if last_code_idx is not None:
+        last_user_idx = max((i for i, m in enumerate(body) if m.get("role") == "user"),
+                            default=-1)
+        for i in range(len(body)):
+            if i == last_user_idx or body[i].get("role") != "user":
+                continue
+            c = body[i].get("content") or ""
+            if "```" in c and len(c) > 4000:
+                body[i] = {"role": "user", "content": _CODE_FENCE.sub(
+                    "`[an attached file the user shared earlier — omitted here to save "
+                    "context; ask for it again if you need it]`", c)}
 
     sys_len = sum(_msg_len(m) for m in system)
     budget  = budget_total - sys_len
@@ -1679,25 +1709,96 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
     return {"error": f"{prov['label']} chain failed. Last: {last}. "
                      f"Try Settings → refresh models, or pick a different model/provider."}
 
+_FENCE = re.compile(r"^([ \t]*)(`{3,})[ \t]*([A-Za-z0-9_+.-]*)[ \t]*$", re.M)
+
+
+def _code_spans(reply):
+    """Every fenced block in a reply, as (lang, body_start, body_end, ticks).
+
+    Fence length is respected: a ```` fence is NOT closed by a ``` line. That is
+    what lets TheDawg emit code containing markdown fences safely.
+    """
+    marks = [(m.start(), m.end(), len(m.group(2)), (m.group(3) or "").lower())
+             for m in _FENCE.finditer(reply or "")]
+    spans, i = [], 0
+    while i < len(marks):
+        start, end, ticks, lang = marks[i]
+        closers = [j for j in range(i + 1, len(marks))
+                   if marks[j][2] >= ticks and not marks[j][3]]
+        if closers:
+            spans.append((lang, end + 1, marks[closers[0]][0], ticks, closers))
+            i = closers[0] + 1
+        else:
+            spans.append((lang, end + 1, len(reply), ticks, []))
+            break
+    return spans
+
+
+def _parses(text):
+    import ast
+    try:
+        ast.parse(text)
+        return True
+    except Exception:
+        return False
+
+
 def extract_code(reply):
-    """Pull the python code block out of a model reply (tagged, else any fence)."""
-    m = re.search(r"```(?:python|py)\s*\n(.*?)```", reply, re.S | re.I) \
-        or re.search(r"```\s*\n(.*?)```", reply, re.S)
-    return m.group(1).rstrip() if m else None
+    """Pull the python code block out of a model reply (tagged, else any fence).
+
+    The hard case, and one that used to silently wreck real tools: the code
+    itself contains a markdown fence — a --help string with a fenced usage
+    example, a tool that prints markdown. A non-greedy `.*?` stopped at that
+    INNER fence and handed back a truncated file, which then failed the smoke
+    test with a syntax error the model never made and burned every autotest fix
+    round trying to repair code that was fine when it left the model.
+
+    So when a block doesn't parse as Python, try the later closing fences too and
+    take the widest span that does. Falls back to the old behaviour if nothing
+    parses, so a genuinely broken reply still reaches the analyzer as before.
+    """
+    reply = reply or ""
+    marks = [(m.start(), m.end(), len(m.group(2)), (m.group(3) or "").lower())
+             for m in _FENCE.finditer(reply)]
+    spans = _code_spans(reply)
+    if not spans:
+        return None
+    chosen = None
+    for sp in spans:
+        if sp[0] in ("python", "py"):
+            chosen = sp
+            break
+    chosen = chosen or spans[0]
+    lang, bstart, bend, ticks, closers = chosen
+    body = reply[bstart:bend]
+    if _parses(body) or not closers:
+        return body.rstrip() or None
+    # the first closer truncated it — widen to the furthest fence that parses
+    for j in reversed(closers):
+        wider = reply[bstart:marks[j][0]]
+        if _parses(wider):
+            return wider.rstrip() or None
+    return body.rstrip() or None
+
+
+def fence_for(code):
+    """A fence long enough that `code` cannot close it from the inside."""
+    longest = max((len(r) for r in re.findall(r"`+", code or "")), default=0)
+    return "`" * max(3, longest + 1)
+
 
 def replace_first_code_block(reply, new_code):
-    """Swap the body of the first python/py fenced block (or any fenced block) in a
-    reply with new_code, preserving the surrounding prose. Mirrors extract_code's
-    block selection so the swapped block is the same one the rest of the app reads.
-    Returns the rewritten reply, or the original if no fenced block is present."""
-    nc = new_code.rstrip()
-    def _do(m):
-        return m.group(1) + nc + "\n" + m.group(3)
-    for pat in (re.compile(r"(```(?:python|py)\s*\n)(.*?)(```)", re.S | re.I),
-                re.compile(r"(```\s*\n)(.*?)(```)", re.S)):
-        if pat.search(reply):
-            return pat.sub(_do, reply, count=1)
-    return reply
+    """Swap the body of the code block extract_code would read, preserving the
+    surrounding prose. Returns the rewritten reply, or the original if there is
+    no fenced block."""
+    old = extract_code(reply)
+    if old is None:
+        return reply
+    idx = reply.find(old)
+    if idx < 0:
+        return reply
+    return reply[:idx] + new_code.rstrip() + reply[idx + len(old):]
+
 
 # --------------------------------------------------------------------------
 # WHOLE-CODE ANALYSIS  -- catch clashes the model can't see in its own output
@@ -3096,6 +3197,253 @@ def _latest_code_in(convo):
                 return c
     return None
 
+# ==========================================================================
+# TARGETED EDITS
+#
+# The single biggest cost in a long build is that every change — "make the
+# button blue", "fix the off-by-one" — made the model retype the ENTIRE file.
+# On a 380-line tool that is ~7,700 output tokens to alter one line, and output
+# is billed several times the rate of input.
+#
+# So for a change to code that already exists, ask for search/replace blocks
+# instead and apply them here. A one-line change becomes ~150 output tokens.
+# The reply handed back upstream still carries the complete new script in a
+# ```python block, so the autotest loop, the UI and the session format never
+# learn this happened.
+#
+# The safety property that makes this usable: an edit is applied ONLY if its
+# SEARCH text occurs EXACTLY once. Zero matches or several and the whole round
+# is abandoned and retried as an ordinary full rewrite. A patch that doesn't
+# fit is never guessed at.
+# ==========================================================================
+EDIT_PROMPT = """You are modifying an existing single-file Python tool.
+
+Return your changes as SEARCH/REPLACE blocks — never the whole file.
+
+<<<<<<< SEARCH
+(lines copied EXACTLY from the current file, including indentation)
+=======
+(what they become)
+>>>>>>> REPLACE
+
+Rules:
+- SEARCH must be copied character for character from the file you were shown,
+  and must appear EXACTLY ONCE in it. If a line isn't unique, include the lines
+  above and below it until the block is.
+- To insert: SEARCH a nearby anchor line, REPLACE with that line plus the new ones.
+- To delete: leave the REPLACE side empty.
+- Change only what the request needs. Do not reformat untouched code.
+- Use as many blocks as you need, but keep each one tight.
+- Put ONE short sentence about what you changed before the first block.
+- If the request genuinely requires rewriting most of the file, reply with the
+  single word FULL_REWRITE and nothing else."""
+
+_EDIT_BLOCK = re.compile(
+    r"<{5,}\s*SEARCH\s*\n(.*?)\n?={5,}\s*\n(.*?)\n?>{5,}\s*REPLACE",
+    re.S)
+
+
+def parse_edit_blocks(reply):
+    """Pull (search, replace) pairs out of a model reply."""
+    return [(m.group(1), m.group(2)) for m in _EDIT_BLOCK.finditer(reply or "")]
+
+
+def _find_line_span(hay_lines, needle_lines, loose=False):
+    """Every index where needle_lines occurs as a run of WHOLE lines in hay_lines.
+
+    Line-anchored, not substring. Substring matching looked reasonable and was
+    quietly terrible: a SEARCH of `    return a + b + 3` also matches inside
+    `    return a + b + 30`, so a perfectly good single-line patch gets rejected
+    as ambiguous — or worse, a shorter needle silently matches a prefix of a
+    longer line. Whole-line comparison is what the model thinks it is writing.
+    """
+    if not needle_lines:
+        return []
+    norm = (lambda s: s.strip()) if loose else (lambda s: s.rstrip())
+    hay = [norm(x) for x in hay_lines]
+    ned = [norm(x) for x in needle_lines]
+    n = len(ned)
+    return [i for i in range(len(hay) - n + 1) if hay[i:i + n] == ned]
+
+
+def apply_edit_blocks(code, blocks):
+    """Apply every block or none. Returns (new_code, error_or_None).
+
+    Matching a block EXACTLY ONCE is the whole safety story here — a fuzzy match
+    would let a plausible-looking patch land in the wrong place, which is far
+    worse than spending the tokens on a rewrite. Two passes: exact lines
+    (trailing whitespace ignored), then indentation-insensitive as a last resort,
+    and only ever when that pass finds precisely one home for the block.
+    """
+    if not blocks:
+        return None, "no edit blocks in the reply"
+    lines = (code or "").split("\n")
+    for i, (search, replace) in enumerate(blocks, 1):
+        if not search.strip():
+            return None, f"block {i}: empty SEARCH"
+        s_lines = search.split("\n")
+        r_lines = replace.split("\n") if replace else []
+        if r_lines == [""]:
+            r_lines = []
+        hits = _find_line_span(lines, s_lines)
+        if not hits:
+            hits = _find_line_span(lines, s_lines, loose=True)
+            if len(hits) == 1:
+                # keep the file's own indentation for the replaced region
+                pad = lines[hits[0]][:len(lines[hits[0]]) - len(lines[hits[0]].lstrip())]
+                base = min((len(x) - len(x.lstrip()) for x in r_lines if x.strip()), default=0)
+                r_lines = [(pad + x[base:]) if x.strip() else x for x in r_lines]
+        if not hits:
+            return None, f"block {i}: SEARCH text not found in the file"
+        if len(hits) > 1:
+            return None, (f"block {i}: SEARCH text appears {len(hits)} times — "
+                          f"not unique, needs more surrounding context")
+        at = hits[0]
+        lines = lines[:at] + r_lines + lines[at + len(s_lines):]
+    out = "\n".join(lines)
+    if out.strip() == (code or "").strip():
+        return None, "the edits changed nothing"
+    return out, None
+
+
+def _edit_request(code, instruction, prior_user=""):
+    """The compact payload for an edit round: no build doctrine, no history."""
+    ctx = f"The user's request:\n{prior_user.strip()[:1500]}\n\n" if prior_user else ""
+    return [
+        {"role": "system", "content": EDIT_PROMPT},
+        {"role": "user", "content":
+            f"{ctx}=== CURRENT FILE ===\n```python\n{code}\n```\n\n{instruction}"},
+    ]
+
+
+def try_edit_round(code, instruction, prior_user="", provider_id=None, retries=1):
+    """One targeted-edit attempt. Returns a normal result dict with the FULL new
+    script in its reply, or None to mean 'fall back to a full rewrite'.
+
+    A block that doesn't match gets ONE cheap correction round before we give up.
+    This matters more than it looks: the usual failure is a SEARCH copied slightly
+    wrong, and telling the model exactly which block missed costs ~300 tokens,
+    where falling straight through to a full rewrite costs thousands. Without the
+    retry the whole scheme is only worth having when the model is already good at
+    the format; with it, a mediocre run still comes out ahead.
+    """
+    if not code or not code.strip() or not edit_mode_on():
+        return None
+    convo = _edit_request(code, instruction, prior_user)
+    res = None
+    applied_code = None
+    for attempt in range(retries + 1):
+        # Capped below the build ceiling but high enough to hold a full file, so a
+        # model that ignores the format and rewrites anyway isn't truncated.
+        res = call_model(convo, provider_id, temperature=BUILD_TEMPERATURE,
+                         tier="build", max_tokens=16000)
+        if res.get("error"):
+            return None
+        reply = res.get("reply", "")
+        blocks = parse_edit_blocks(reply)
+        if not blocks:
+            break
+        _new, _err = apply_edit_blocks(code, blocks)
+        if _err is None:
+            applied_code = _new          # keep it; re-deriving it below is free but pointless
+            break
+        if attempt == retries:
+            break
+        EDIT_STATS["retries"] += 1
+        convo = convo + [
+            {"role": "assistant", "content": reply},
+            {"role": "user", "content":
+                f"That patch did not apply: {_err}.\n\nCopy the SEARCH lines "
+                f"character for character from the file above, and include enough "
+                f"surrounding lines to make the block unique. Send the corrected "
+                f"SEARCH/REPLACE blocks only."},
+        ]
+    reply = res.get("reply", "")
+    blocks = parse_edit_blocks(reply)
+
+    # SALVAGE: some models ignore the format and just hand back the whole script.
+    # Throwing that away and paying for a second full call is the worst of both
+    # worlds — if what came back is a complete, parseable file, take it.
+    if not blocks:
+        whole = extract_code(reply)
+        if whole and whole.strip() != (code or "").strip():
+            ok, _report, _checks = smoke_test(whole)
+            if ok:
+                EDIT_STATS["salvaged"] += 1
+                _edit_won()          # we still got a usable answer for one call
+                res["edit_mode"] = False
+                return res
+        EDIT_STATS["fallbacks"] += 1
+        EDIT_STATS["last_error"] = "no edit blocks and no usable full script"
+        _edit_lost()
+        return None
+
+    new_code, err = (applied_code, None) if applied_code else apply_edit_blocks(code, blocks)
+    if err:
+        EDIT_STATS["fallbacks"] += 1
+        EDIT_STATS["last_error"] = err
+        _edit_lost()
+        return None
+    prose = _EDIT_BLOCK.sub("", reply).strip() or "Applied the change."
+    EDIT_STATS["applied"] += 1
+    _edit_won()
+    EDIT_STATS["saved_chars"] += max(0, len(code) - len(reply))
+    # Pick a fence longer than any backtick run in the code. Without this, a tool
+    # whose help text contains a markdown example closed our own fence early and
+    # everything downstream read a truncated file.
+    f = fence_for(new_code)
+    res["reply"] = f"{prose}\n\n{f}python\n{new_code}\n{f}"
+    res["edit_mode"] = True
+    return res
+
+
+def _edit_stats_reset():
+    EDIT_STATS.update(applied=0, fallbacks=0, salvaged=0, retries=0,
+                      saved_chars=0, last_error="", streak=0, off=False)
+
+
+EDIT_STATS = {"applied": 0, "fallbacks": 0, "salvaged": 0, "retries": 0,
+              "saved_chars": 0, "last_error": "", "streak": 0, "off": False}
+
+# How many patch attempts in a row may fail before we stop trying.
+EDIT_GIVE_UP_AFTER = 3
+
+
+def edit_mode_on():
+    """Targeted edits are a bet: they save 4-8x when they land, and cost one wasted
+    call when they don't. Against a model that simply can't produce the format the
+    bet loses every time and the feature would be worse than not having it — so
+    after EDIT_GIVE_UP_AFTER consecutive misses it switches itself off for the rest
+    of the process, and the build goes back to plain full rewrites."""
+    return not EDIT_STATS["off"]
+
+
+def _edit_won():
+    EDIT_STATS["streak"] = 0
+    EDIT_STATS["off"] = False
+
+
+def edit_mode_rearm():
+    """A new tool is a new model, a new file and a new chance. The breaker exists
+    to stop throwing money at a model that can't patch THIS file — not to punish
+    the rest of the process for one bad session."""
+    EDIT_STATS["streak"] = 0
+    EDIT_STATS["off"] = False
+
+
+def _edit_lost():
+    EDIT_STATS["streak"] += 1
+    if EDIT_STATS["streak"] >= EDIT_GIVE_UP_AFTER:
+        EDIT_STATS["off"] = True
+
+
+def _wants_fresh_build(text):
+    """Requests that are asking for a NEW program, not a change to this one."""
+    t = (text or "").lower()
+    return any(k in t for k in ("start over", "from scratch", "rewrite it", "rewrite the",
+                                "new tool", "completely different", "throw it away"))
+
+
 def chat_with_autotest(messages, provider_id=None):
     """Call the model, then silently smoke-test any code it returns, feeding
     failures back for up to AUTOTEST_MAX_ROUNDS before returning to the user."""
@@ -3107,6 +3455,8 @@ def chat_with_autotest(messages, provider_id=None):
     # actually exists and stops re-introducing bugs. Injected as a transient system
     # note (not persisted into the saved conversation).
     existing = _latest_code_in(convo)
+    if not existing:
+        edit_mode_rearm()          # fresh build — give patching another go
     if existing:
         cmap = code_map(existing)
         if cmap:
@@ -3119,9 +3469,23 @@ def chat_with_autotest(messages, provider_id=None):
             convo = convo[:insert_at] + [{"role": "system", "content": cmap}] + convo[insert_at:]
 
     rounds = []
+    # If there is already a tool here and the user is asking to CHANGE it, try the
+    # targeted-edit path first — same result, a fraction of the output tokens.
+    # Anything unexpected about the patch and this returns None, and we do the
+    # ordinary full-rewrite call below exactly as before.
+    last_user = ""
+    for _m in reversed(convo):
+        if _m.get("role") == "user":
+            last_user = _m.get("content") or ""
+            break
+    res = None
+    if existing and last_user and not _wants_fresh_build(last_user):
+        res = try_edit_round(existing, "Make this change:\n" + last_user,
+                             prior_user="", provider_id=provider_id)
     # Lower temperature on code generation: more deterministic, fewer hallucinated
     # APIs and careless slips. Reasoning paths (intake/review) keep the default 0.3.
-    res = call_model(convo, provider_id, temperature=BUILD_TEMPERATURE, tier="build")
+    if res is None:
+        res = call_model(convo, provider_id, temperature=BUILD_TEMPERATURE, tier="build")
     if res.get("error"):
         return res
 
@@ -3166,16 +3530,60 @@ def chat_with_autotest(messages, provider_id=None):
             fix_msg += f"\n=== structure of the code you just wrote (keep calls consistent) ===\n{cmap}\n"
         fix_msg += ("\nFix only what is listed. Re-check every call's arguments and that every "
                     "name is defined before use. Return the whole file.")
-        convo = convo + [
-            {"role": "assistant", "content": res["reply"]},
-            {"role": "user", "content": fix_msg},
-        ]
-        nxt = call_model(convo, provider_id, temperature=BUILD_TEMPERATURE, tier="build")
+        # A fix round is by definition a small, targeted change, so patch it rather
+        # than resending the whole build conversation and retyping the whole file.
+        # Before: ~18.5k in + 7.7k out. After: ~8k in + ~200 out.
+        nxt = try_edit_round(code, fix_msg, provider_id=provider_id)
+        if nxt is None:
+            convo = convo + [
+                {"role": "assistant", "content": res["reply"]},
+                {"role": "user", "content": fix_msg},
+            ]
+            nxt = call_model(convo, provider_id, temperature=BUILD_TEMPERATURE, tier="build")
         if nxt.get("error"):
             res["autotest"] = {"ran": True, "passed": False, "rounds": rounds,
                                "note": "auto-fix call failed: " + nxt["error"]}
             return res
         res = nxt
+
+def _autotest_existing(res, provider_id=None):
+    """Run the same silent smoke-test/fix loop over a reply we already have,
+    so the targeted-edit path gets identical verification to a full rewrite."""
+    rounds = []
+    for attempt in range(AUTOTEST_MAX_ROUNDS + 1):
+        code = extract_code(res.get("reply", ""))
+        if not code:
+            res["autotest"] = {"ran": False, "rounds": rounds}
+            return res
+        fixed, applied = autofix_with_ruff(code)
+        if applied and fixed != code:
+            res["reply"] = replace_first_code_block(res.get("reply", ""), fixed)
+            code = fixed
+        passed, report, checks = smoke_test(code)
+        rounds.append({"attempt": attempt + 1, "passed": passed,
+                       "checks": [c[0] for c in checks if c[1]],
+                       "failed": [c[0] for c in checks if not c[1]],
+                       "report": "" if passed else report,
+                       "autofixed": applied, "minor": []})
+        if passed or attempt == AUTOTEST_MAX_ROUNDS:
+            res["autotest"] = {"ran": True, "passed": passed, "rounds": rounds}
+            return res
+        fix_msg = ("Your code failed an automatic quality check. Fix the SPECIFIC "
+                   "problems below.\n\n=== problems found ===\n" + report)
+        nxt = try_edit_round(code, fix_msg, provider_id=provider_id)
+        if nxt is None:
+            nxt = call_model(
+                [{"role": "system", "content": SYSTEM_PROMPT},
+                 {"role": "user", "content": fix_msg +
+                  f"\n\n=== CODE ===\n```python\n{code}\n```\n\nReturn the FULL corrected script."}],
+                provider_id, temperature=BUILD_TEMPERATURE, tier="build")
+        if nxt.get("error"):
+            res["autotest"] = {"ran": True, "passed": False, "rounds": rounds,
+                               "note": "auto-fix call failed: " + nxt["error"]}
+            return res
+        res = nxt
+    return res
+
 
 def review_code(code, provider_id=None):
     """Feature #2 — the 'review my code' button. Runs the independent static analyzer,
@@ -4099,13 +4507,20 @@ def polish_round(code, messages, provider_id=None):
             "script with one line on what you changed."
         )
 
-    convo = [{"role": "system", "content": SYSTEM_PROMPT}, {
-        "role": "user",
-        "content": (directive +
-                    f"\n\n=== CODE ===\n```python\n{code}\n```\n\n"
-                    f"=== RECENT RUNS ===\n{log_blob}" + probe_section + map_section)
-    }]
-    res = chat_with_autotest(convo, provider_id)
+    evidence_blob = (f"=== RECENT RUNS ===\n{log_blob}" + probe_section + map_section)
+    # A polish round is a fix, not a rewrite: try it as targeted edits first. The
+    # loop runs up to 8 times, so this is where full-file regeneration hurt most.
+    res = try_edit_round(code, directive + "\n\n" + evidence_blob, provider_id=provider_id)
+    if res is None:
+        convo = [{"role": "system", "content": SYSTEM_PROMPT}, {
+            "role": "user",
+            "content": (directive +
+                        f"\n\n=== CODE ===\n```python\n{code}\n```\n\n" + evidence_blob)
+        }]
+        res = chat_with_autotest(convo, provider_id)
+    else:
+        # still smoke-test whatever the edits produced
+        res = _autotest_existing(res, provider_id)
     # let the UI show what this round was actually reacting to
     res["evidence"] = {
         "smoke_passed": passed,
@@ -4115,6 +4530,10 @@ def polish_round(code, messages, provider_id=None):
         "probe_alive": probe.get("alive"),
         "problems": len(problems),
     }
+    # Tell the caller whether this round found anything real. Once the evidence is
+    # clean the loop is just asking the model to invent work, and each of those
+    # rounds costs a full edit call — the UI stops after two in a row.
+    res["clean_round"] = not problems
     return res
 
 # ==========================================================================
@@ -4363,6 +4782,7 @@ class Handler(BaseHTTPRequestHandler):
                 "desktop": detect_desktop_env(),
                 "distro": DISTRO,
                 "usage": usage_summary(),
+                "edits": edit_summary(),
                 "native": NATIVE_SHELL.get("active", False),
                 "shell": NATIVE_SHELL.get("kind", ""),
             })

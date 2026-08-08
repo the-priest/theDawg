@@ -33,7 +33,7 @@ import threading
 import time
 from pathlib import Path
 
-__version__ = "1.0.2"
+__version__ = "1.0.4"
 HERE = Path(__file__).resolve().parent
 
 

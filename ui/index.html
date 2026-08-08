@@ -1027,6 +1027,11 @@ function paintCost(s){
   let txt=`${k(total)} tok`;
   if(u.cost_usd>0) txt+=`<span class="hc-sep"> \u00b7 </span>$${u.cost_usd.toFixed(3)}${u.cost_complete?"":"+"}`;
   if(t.calls) txt+=`<span class="hc-sep"> \u00b7 </span>${t.calls} call${t.calls===1?"":"s"}`;
+  /* Targeted edits are the difference between a 1M budget lasting a few sessions
+     and lasting dozens, so show what they're actually saving rather than leaving
+     it invisible. */
+  const e=s.edits||{};
+  if(e.applied) txt+=`<span class="hc-sep"> \u00b7 </span>${k(e.output_tokens_saved||0)} tok saved`;
   el.innerHTML=txt;
   el.hidden=false;
 }
@@ -1917,7 +1922,7 @@ $("#polishBtn").onclick=async ()=>{
      side's version of the code silently won. */
   state.busy=true; $("#sendBtn").disabled=true;
   const btn=$("#polishBtn"); btn.classList.add("running"); btn.textContent="■ stop polishing";
-  let round=0;
+  let round=0, cleanStreak=0;
   while(polishing){
     round++;
     $("#polishStatus").textContent=`testing & polishing — round ${round}…`;
@@ -1950,6 +1955,14 @@ $("#polishBtn").onclick=async ()=>{
     }catch(e){ if(!polishing) return; }
     if(!polishing) return;
     if(pr) renderProbe(pr);
+    /* Once TheDawg's own evidence comes back clean twice running, the loop is no
+       longer fixing anything — it's paying a full model call per round to invent
+       work. Stop and say so rather than grinding to the 8-round cap. */
+    cleanStreak = res.clean_round ? cleanStreak+1 : 0;
+    if(cleanStreak>=2){
+      addMsg("smith","Two rounds running, the tests and the analyzer found nothing left to fix — stopping here rather than burning calls inventing work. Ask for something specific if you want more.");
+      return endPolish("converged — nothing left to fix");
+    }
     if(round>=8){ return endPolish("stopped — hit 8-round safety cap"); }
   }
   endPolish("done");
