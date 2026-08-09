@@ -970,12 +970,19 @@ $("#winClose").onclick = async ()=>{
 $("#winMin").onclick = ()=>toast("Minimize is handled by your window manager — use its controls");
 
 /* ============================ boot ============================ */
-init();
 /* Saving settings calls init() again to pick up the new key/model. It used to
    re-run the whole boot sequence with it — a second "what do you want to build?"
    greeting appended to a conversation already in progress, and the startup chime
-   replayed. Only the first call is a boot; the rest just refresh the top bar. */
+   replayed. Only the first call is a boot; the rest just refresh the top bar.
+
+   This flag MUST be declared before init() is called. `let` has a temporal dead
+   zone: with the call above the declaration, the very first line of init() threw
+   ReferenceError. Because init() is async, that became an unhandled rejection
+   rather than a visible error — so the entire boot silently did nothing. No
+   provider list, no model name, no host or cost chip, no greeting, and no
+   Settings prompt when there was no API key. */
 let _booted=false;
+init();
 async function init(){
   const first=!_booted; _booted=true;
   if(first) await loadSounds();
@@ -1271,7 +1278,7 @@ async function converse(){
   $("#modelName").textContent=res.model || $("#modelName").textContent;
   $("#modelDot").classList.add("on");
 
-  const {prose, code}=splitReply(res.reply);
+  const {prose, code}=splitReply(res.reply, res.code);
   const hadCode=!!code;
   if(code){
     loadCode(code);
@@ -1296,12 +1303,32 @@ async function converse(){
   }
 }
 
-function splitReply(reply){
-  let m=reply.match(/```(?:python|py)\s*\n([\s\S]*?)```/i) || reply.match(/```\s*\n([\s\S]*?)```/);
-  if(!m) return {prose:reply.trim(), code:null};
-  const code=m[1].replace(/\s+$/,"");
-  const prose=reply.replace(m[0],"").trim();
-  return {prose, code};
+/* The server sends `code` with every chat/polish reply, extracted by the one
+   fence-aware parser that also feeds the analyzer. Use that. This function is
+   only the fallback for a reply that arrived without it.
+
+   It differs from the old one in two ways that both caused real breakage:
+   an EMPTY code block is skipped rather than accepted (a leftover fence used to
+   win and the actual script got printed into the chat), and fences of four or
+   more backticks are understood (a tool whose source contains ``` is wrapped in
+   a longer fence so it can't close itself early). */
+function allCodeBlocks(reply){
+  const out=[]; const re=/^[ \t]*(`{3,})[ \t]*([A-Za-z0-9_+.-]*)[ \t]*\n([\s\S]*?)^[ \t]*\1`*[ \t]*$/gm;
+  let m; while((m=re.exec(reply))!==null) out.push({lang:(m[2]||"").toLowerCase(), body:m[3], raw:m[0]});
+  return out;
+}
+function splitReply(reply, serverCode){
+  reply = reply || "";
+  const blocks = allCodeBlocks(reply).filter(b=>b.body.trim().length>0);
+  if(serverCode && serverCode.trim()){
+    const hit = blocks.find(b=>b.body.replace(/\s+$/,"")===serverCode.replace(/\s+$/,""))
+             || blocks.find(b=>b.lang==="python"||b.lang==="py") || blocks[0];
+    const prose = hit ? reply.replace(hit.raw,"").trim() : reply.trim();
+    return {prose, code:serverCode.replace(/\s+$/,"")};
+  }
+  if(!blocks.length) return {prose:reply.trim(), code:null};
+  const hit = blocks.find(b=>b.lang==="python"||b.lang==="py") || blocks[0];
+  return {prose: reply.replace(hit.raw,"").trim(), code: hit.body.replace(/\s+$/,"")};
 }
 
 /* ============================ step rail ============================ */
@@ -1474,6 +1501,7 @@ function pyHighlight(src){
 }
 
 function renderCode(code){
+  code = code || "";
   const body=$("#codeBody"); body.innerHTML="";
   const pre=document.createElement("pre"); pre.className="code";
   let html;
@@ -1576,9 +1604,15 @@ $("#editBtn").onclick=()=>{
 $("#editCancel").onclick=()=>{ $("#editBar").style.display="none"; renderCode(state.code); };
 $("#editSave").onclick=()=>{
   const v=$("#codeEdit").value;
-  state.prevCode=state.code; state.code=v;
-  $("#editBar").style.display="none"; renderCode(v); $("#diffBtn").disabled=false;
-  state.messages.push({role:"assistant", content:"```python\n"+v+"\n```"});
+  $("#editBar").style.display="none";
+  /* This used to set state.code by hand and re-render, and nothing else — so a
+     manual edit never reached autosaveSession(). Close the window after editing
+     by hand and the edit was gone. loadCode() is the one path that renders,
+     re-derives the name, bumps the patch version, repaints and AUTOSAVES. */
+  loadCode(v);
+  const f = (v.match(/`+/g)||[]).reduce((a,b)=>b.length>a?b.length:a, 0);
+  const fence = "`".repeat(Math.max(3, f+1));
+  state.messages.push({role:"assistant", content:fence+"python\n"+v+"\n"+fence});
   state.messages.push({role:"user", content:"(I manually edited the code above — treat that as the current version.)"});
   toast("Edits applied — model is in sync");
 };
@@ -1644,7 +1678,11 @@ async function renderSessions(){
     </div>`).join("");
   $("#libBody").querySelectorAll(".lib-item").forEach(el=>{
     el.onclick=(e)=>{ if(!e.target.classList.contains("del")) resumeSession(el.dataset.id); };
+    /* Deleting is permanent and there is no undo. Every other destructive action
+       in this app asks first (quit, dangerous run, build); this one didn't, and it
+       sits one careless click from "resume". */
     el.querySelector(".del").onclick=async(e)=>{ e.stopPropagation();
+      if(!confirm(`Delete the in-progress tool "${el.querySelector(".nm").textContent.trim()}"?\n\nThis can't be undone.`)) return;
       await fetch("/api/session/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:el.dataset.id})});
       renderSessions(); };
   });
@@ -1659,13 +1697,18 @@ async function resumeSession(id){
   state.intakeDone=true; state.prevCode=null; state.attachments=[]; state.hasRun=false; renderAttachments();
   // a resumed tool inherits none of the last one's run state
   state.lastError=null; showStop(null); $("#shotWrap").style.display="none";
+  state.pendingRelease=false; dismissFollowup();
   state.ver=s.ver||"1.0.0"; state.named=!!s.named; state.title=s.title||s.name||s.id; state._semverInit=true;
   $("#thread").innerHTML="";
   (s.messages||[]).forEach(m=>{
     if(m.role==="user") addMsg("you", m.content.replace(/```[\s\S]*?```/g,"[code]"));
     else if(m.role==="assistant"){ const {prose}=splitReply(m.content); if(prose) addMsg("smith", prose); }
   });
-  if(s.code){ loadCode(s.code, {restore:true}); setVersion(s.version||"testing"); }
+  /* setVersion was inside the if — resume a session that has no code yet and the
+     badge kept saying "release" from whatever you were working on before. The
+     resumed tool's own state is the truth either way. */
+  setVersion(s.version||"testing");
+  if(s.code){ loadCode(s.code, {restore:true}); }
   $("#args").value=s.args||"";
   $("#libPanel").classList.remove("on");
   toast(`Resumed "${s.name}"`);
@@ -1687,6 +1730,7 @@ async function renderLibrary(){
        the thread cleared and rebuilt twice. The item handler alone covers both. */
     el.onclick=(e)=>{ if(!e.target.classList.contains("del")) loadFromLibrary(el.dataset.id); };
     el.querySelector(".del").onclick=async(e)=>{ e.stopPropagation();
+      if(!confirm(`Delete "${el.querySelector(".nm").textContent.trim()}" from the library?\n\nThis can't be undone.`)) return;
       await fetch("/api/library/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:el.dataset.id})});
       renderLibrary(); };
   });
@@ -1700,6 +1744,7 @@ async function loadFromLibrary(id){
   state.messages=tool.messages||[]; state.name=tool.name||tool.id; state.intakeDone=true; state.prevCode=null;
   state.sessionId=null; state.attachments=[]; state.hasRun=false; renderAttachments();
   state.lastError=null; showStop(null); $("#shotWrap").style.display="none";
+  state.pendingRelease=false; dismissFollowup();
   state.ver=tool.ver||"1.0.0"; state.named=!!tool.named; state.title=tool.title||tool.name||tool.id; state._semverInit=true;
   $("#thread").innerHTML="";
   (tool.messages||[]).forEach(m=>{
@@ -1865,12 +1910,21 @@ $("#probeBtn").onclick=async ()=>{
 };
 function renderProbe(res){
   const con=$("#console");
-  const cls = res.ok ? "ok" : (res.ran ? "bad" : "meta");
+  /* A destructive-code block is not the same as "couldn't run on this box" — it
+     needs to read as a refusal, in red, not as a grey environment note. */
+  const blocked = res.kind==="blocked-danger";
+  const cls = blocked ? "bad" : (res.ok ? "ok" : (res.ran ? "bad" : "meta"));
   let head;
-  if(!res.ran) head = "self-test couldn't run — "+(res.kind||"unknown")+" (see note below)";
+  if(blocked) head = "⛔ self-test refused — this code contains destructive commands, nothing was run";
+  else if(!res.ran) head = "self-test couldn't run — "+(res.kind||"unknown")+" (see note below)";
   else if(res.crashed_on_interact) head = "✗ the window opens but CRASHES on interaction";
   else if(res.alive===false) head = "✗ the tool CRASHES on startup — window doesn't stay open";
   else if(res.analysis && res.analysis.blank) head = "⚠ the window opens but renders BLANK";
+  /* The server sets ok=true when the window stayed up even if the screenshot
+     could not be analysed or cropped. Say what was actually checked instead of
+     claiming content rendered when nothing looked at it. */
+  else if(!res.analysis || !res.analysis.ok || !res.cropped)
+    head = "✓ the window opens and stays up — rendering NOT verified on this box (see note)";
   else head = "✓ the window opens, stays up and renders real content";
   con.innerHTML = `<span class="${cls}">${esc(head)}</span>\n\n<span class="out">${esc(res.report||"")}</span>`;
   con.scrollTop=0;
@@ -1923,6 +1977,11 @@ $("#polishBtn").onclick=async ()=>{
   state.busy=true; $("#sendBtn").disabled=true;
   const btn=$("#polishBtn"); btn.classList.add("running"); btn.textContent="■ stop polishing";
   let round=0, cleanStreak=0;
+  /* Every exit from this loop MUST release state.busy. Tying the composer to the
+     polish loop means one unexpected throw in here would otherwise leave the chat
+     dead until a reload — so the whole body sits in a try/finally rather than
+     relying on remembering endPolish() at eight different return sites. */
+  try{
   while(polishing){
     round++;
     $("#polishStatus").textContent=`testing & polishing — round ${round}…`;
@@ -1939,7 +1998,7 @@ $("#polishBtn").onclick=async ()=>{
     }
     if(!polishing) return;                            // Stop pressed during the request
     if(res.error){ addMsg("smith","⚠ "+res.error); return endPolish("stopped — "+res.error); }
-    const {prose, code}=splitReply(res.reply);
+    const {prose, code}=splitReply(res.reply, res.code);
     if(!code){ return endPolish("stopped — model returned no code"); }
     loadCode(code); setVersion("testing");
     state.messages.push({role:"assistant", content:res.reply});
@@ -1955,6 +2014,13 @@ $("#polishBtn").onclick=async ()=>{
     }catch(e){ if(!polishing) return; }
     if(!polishing) return;
     if(pr) renderProbe(pr);
+    /* Never keep looping the model over code the self-test refused to execute:
+       eight rounds of paid calls with no evidence coming back, on a tool that
+       needs a human decision first. */
+    if(pr && pr.kind==="blocked-danger"){
+      addMsg("smith","Stopping the polish loop: the self-test refuses to run this code because it contains destructive commands, so each round would be flying blind. Look at the flagged lines first.");
+      return endPolish("stopped — self-test blocked");
+    }
     /* Once TheDawg's own evidence comes back clean twice running, the loop is no
        longer fixing anything — it's paying a full model call per round to invent
        work. Stop and say so rather than grinding to the 8-round cap. */
@@ -1966,6 +2032,13 @@ $("#polishBtn").onclick=async ()=>{
     if(round>=8){ return endPolish("stopped — hit 8-round safety cap"); }
   }
   endPolish("done");
+  }catch(err){
+    addMsg("smith","⚠ The polish loop hit an unexpected error: "+(err&&err.message||err));
+    endPolish("stopped — internal error");
+  }finally{
+    if(polishing) endPolish("stopped");
+    state.busy=false; $("#sendBtn").disabled=false;
+  }
 };
 
 /* ============================ log download / clear ============================ */
@@ -1991,7 +2064,7 @@ $("#clearLogBtn").onclick=async ()=>{
 function applyModelResult(res, introIfProse){
   if(res.error){ addMsg("smith", fmtError(res)); return; }
   $("#modelName").textContent=res.model||$("#modelName").textContent; reflectKey(true);
-  const {prose, code}=splitReply(res.reply);
+  const {prose, code}=splitReply(res.reply, res.code);
   let flag=null;
   if(code){ loadCode(code); setVersion("testing"); flag=`${state.name}.py v${String(state.ver).replace(/^v/,"")}`; const at=res.autotest; if(at && at.ran) flag+=at.passed?"  ·  ✓ auto-tested":"  ·  ⚠ check still failing"; }
   addMsg("smith", prose||introIfProse||"Done.", flag);

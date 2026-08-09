@@ -52,7 +52,7 @@ import urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "2.3.1"
+__version__ = "2.3.4"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --------------------------------------------------------------------------
@@ -1236,7 +1236,19 @@ def run_python(code=None):
 # helpers
 # ==========================================================================
 def looks_dangerous(code):
-    return [p for p in DANGER if re.search(p, code)]
+    """Destructive patterns found in the code, as the TEXT THAT MATCHED.
+
+    This used to hand back the regex sources, which is what the confirm dialog
+    then showed the user — the pattern instead of the line actually in their tool.
+    Nobody can make an informed decision about a regex.
+    """
+    out = []
+    for pat in DANGER:
+        m = re.search(pat, code or "")
+        if m:
+            line = (code or "")[:m.start()].count("\n") + 1
+            out.append("line %d: %s" % (line, " ".join(m.group(0).split())[:80]))
+    return out
 
 def _http_post(url, headers, body, timeout=120):
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers)
@@ -1319,6 +1331,16 @@ def edit_summary():
             "off": EDIT_STATS["off"],
             "hit_rate": round(a / max(1, a + f + s), 2),
             "output_tokens_saved": int(EDIT_STATS["saved_chars"] / 3.6)}
+
+
+def _with_code(res):
+    """Attach the authoritative extracted code to a chat/polish result."""
+    try:
+        if isinstance(res, dict) and res.get("reply") and not res.get("error"):
+            res["code"] = extract_code(res["reply"])
+    except Exception:
+        pass
+    return res
 
 
 def usage_summary():
@@ -1779,6 +1801,19 @@ def extract_code(reply):
         if _parses(wider):
             return wider.rstrip() or None
     return body.rstrip() or None
+
+
+def fenced(code, lang="python"):
+    """Wrap code in a fence long enough that the code can't close it early.
+
+    Six prompts hardcoded ```python around the tool. A tool whose source contains
+    a markdown fence — a --help string with a usage example — closed the fence
+    mid-file, so the MODEL received a truncated program and 'fixed' problems that
+    were really just the cut. Same root cause as the extraction bug, on the way in
+    instead of the way out.
+    """
+    f = fence_for(code)
+    return f"{f}{lang}\n{code}\n{f}"
 
 
 def fence_for(code):
@@ -2600,6 +2635,21 @@ def _smoke_test_uncached(code):
         checks.append(("import-safe", True, ""))
 
     # 2. import-ability: load the module WITHOUT running its __main__ block.
+    #
+    #    "Without running __main__" is not the same as "without running anything":
+    #    exec_module() executes every top-level statement. This check fires
+    #    automatically on EVERY build, unattended, so a model that put a destructive
+    #    call at module level had it executed silently before anyone saw the code —
+    #    the confirm gate on the ▶ launch button never entered the picture. Skip the
+    #    execution entirely in that case and say so; the build still proceeds, the
+    #    user still gets the code, and nothing runs without consent.
+    danger = looks_dangerous(code)
+    if danger:
+        checks.append(("import", True,
+                       "NOT RUN — destructive commands present, so the code was not "
+                       "executed for this check:\n  - " + "\n  - ".join(danger)))
+        return True, "", checks
+
     # Explicit utf-8 everywhere a generated script is written to disk. The default
     # was the locale codec, so with LANG=C (a systemd unit, a bare tty, a container)
     # any non-ASCII character in the generated code — and the prompt actively asks
@@ -2954,6 +3004,20 @@ def probe_run(code, name="tool", settle=None, interact=None):
         settle = PROBE_SETTLE
     if interact is None:
         interact = PROBE_INTERACT
+    # The confirm gate lived only in run_code(). Self-test runs the SAME generated
+    # code as the same user with the same permissions — headless is not a sandbox —
+    # and the auto-polish loop calls it on every round, unattended. So a tool that
+    # ▶ launch refuses to run without a warning was executed silently here, up to
+    # eight times. Refuse instead, and point at the path that can ask.
+    danger = looks_dangerous(code)
+    if danger:
+        res = {"ran": False, "shot": False, "kind": "blocked-danger",
+               "danger": danger,
+               "report": ("SELF-TEST BLOCKED. This code contains destructive commands, and "
+                          "the self-test runs it for real:\n  - " + "\n  - ".join(danger) +
+                          "\n\nNothing was executed. If this is deliberate, use \u25b6 launch, "
+                          "which asks before running. Otherwise remove those lines.")}
+        LAST_PROBE.clear(); LAST_PROBE.update(res); return res
     tk = detect_toolkit(code)
     if not IS_LINUX:
         res = {"ran": False, "shot": False, "kind": "not-linux",
@@ -3236,7 +3300,17 @@ Rules:
 - Use as many blocks as you need, but keep each one tight.
 - Put ONE short sentence about what you changed before the first block.
 - If the request genuinely requires rewriting most of the file, reply with the
-  single word FULL_REWRITE and nothing else."""
+  single word FULL_REWRITE and nothing else.
+
+The rules the file was built under still apply to every line you touch:
+- ONE self-contained script. No new files, no imports of things that aren't
+  installed, no placeholder comments and no TODOs — finished code only.
+- Never swallow an error. No bare `except: pass`. If something can fail, the
+  user must be able to SEE that it failed, in the window, in plain language.
+- Every name you reference must already exist in the file or be defined by your
+  own edit, and every call must match the signature it's calling.
+- Don't leave the program in a state it can't get out of, and don't do slow work
+  on the UI thread."""
 
 _EDIT_BLOCK = re.compile(
     r"<{5,}\s*SEARCH\s*\n(.*?)\n?={5,}\s*\n(.*?)\n?>{5,}\s*REPLACE",
@@ -3312,7 +3386,7 @@ def _edit_request(code, instruction, prior_user=""):
     return [
         {"role": "system", "content": EDIT_PROMPT},
         {"role": "user", "content":
-            f"{ctx}=== CURRENT FILE ===\n```python\n{code}\n```\n\n{instruction}"},
+            f"{ctx}=== CURRENT FILE ===\n" + fenced(code) + f"\n\n{instruction}"},
     ]
 
 
@@ -3384,7 +3458,16 @@ def try_edit_round(code, instruction, prior_user="", provider_id=None, retries=1
         EDIT_STATS["last_error"] = err
         _edit_lost()
         return None
-    prose = _EDIT_BLOCK.sub("", reply).strip() or "Applied the change."
+    # Models very often wrap their SEARCH/REPLACE blocks in a ```python fence.
+    # Removing the blocks then leaves an EMPTY fence behind in the prose, and the
+    # first thing downstream that looks for a code block finds that instead of the
+    # real script — which is exactly how the new file ended up printed into the
+    # chat while the code pane kept the old version.
+    prose = _EDIT_BLOCK.sub("", reply)
+    prose = re.sub(r"^[ \t]*`{3,}[A-Za-z0-9_+.-]*[ \t]*\n\s*`{3,}[ \t]*$", "",
+                   prose, flags=re.M)                    # empty fence pairs
+    prose = re.sub(r"^[ \t]*`{3,}[A-Za-z0-9_+.-]*[ \t]*$", "", prose, flags=re.M)  # orphans
+    prose = re.sub(r"\n{3,}", "\n\n", prose).strip() or "Applied the change."
     EDIT_STATS["applied"] += 1
     _edit_won()
     EDIT_STATS["saved_chars"] += max(0, len(code) - len(reply))
@@ -3437,6 +3520,23 @@ def _edit_lost():
         EDIT_STATS["off"] = True
 
 
+def _drop_code_block(text, code):
+    """Remove a fenced block from `text` when it holds exactly `code`."""
+    if not text or not code:
+        return text
+    target = code.strip()
+    for _lang, bstart, bend, _ticks, _cl in _code_spans(text):
+        if text[bstart:bend].strip() == target:
+            head = text.rfind("\n", 0, bstart)
+            head = text.rfind("\n", 0, head) if head > 0 else 0
+            tail = text.find("\n", bend)
+            tail = text.find("\n", tail + 1) if tail != -1 else len(text)
+            return (text[:max(0, head)] +
+                    "\n(the current file is shown above, in the CURRENT FILE section)\n" +
+                    text[tail if tail != -1 else len(text):])
+    return text
+
+
 def _wants_fresh_build(text):
     """Requests that are asking for a NEW program, not a change to this one."""
     t = (text or "").lower()
@@ -3444,7 +3544,7 @@ def _wants_fresh_build(text):
                                 "new tool", "completely different", "throw it away"))
 
 
-def chat_with_autotest(messages, provider_id=None):
+def chat_with_autotest(messages, provider_id=None, base_code=None):
     """Call the model, then silently smoke-test any code it returns, feeding
     failures back for up to AUTOTEST_MAX_ROUNDS before returning to the user."""
     convo = list(messages)
@@ -3454,7 +3554,12 @@ def chat_with_autotest(messages, provider_id=None):
     # current code right before it edits — so it keeps calls consistent with what
     # actually exists and stops re-introducing bugs. Injected as a transient system
     # note (not persisted into the saved conversation).
-    existing = _latest_code_in(convo)
+    # base_code, when the caller has it, is authoritative. _latest_code_in() reads
+    # the newest code block out of the CONVERSATION, which is not always the code
+    # the caller is actually working on — fix-from-log and polish both pass the
+    # live code explicitly, and patching a stale version from the history instead
+    # would silently undo whatever happened since.
+    existing = base_code or _latest_code_in(convo)
     if not existing:
         edit_mode_rearm()          # fresh build — give patching another go
     if existing:
@@ -3480,7 +3585,12 @@ def chat_with_autotest(messages, provider_id=None):
             break
     res = None
     if existing and last_user and not _wants_fresh_build(last_user):
-        res = try_edit_round(existing, "Make this change:\n" + last_user,
+        # try_edit_round already puts the file in its own === CURRENT FILE ===
+        # section. Callers that build their own prompt — fix-from-log especially —
+        # embed the code in the user turn too, so the model was being handed the
+        # whole program TWICE in one request: double the input tokens, and an
+        # invitation to patch against whichever copy it happened to read.
+        res = try_edit_round(existing, "Make this change:\n" + _drop_code_block(last_user, existing),
                              prior_user="", provider_id=provider_id)
     # Lower temperature on code generation: more deterministic, fewer hallucinated
     # APIs and careless slips. Reasoning paths (intake/review) keep the default 0.3.
@@ -3575,7 +3685,7 @@ def _autotest_existing(res, provider_id=None):
             nxt = call_model(
                 [{"role": "system", "content": SYSTEM_PROMPT},
                  {"role": "user", "content": fix_msg +
-                  f"\n\n=== CODE ===\n```python\n{code}\n```\n\nReturn the FULL corrected script."}],
+                  "\n\n=== CODE ===\n" + fenced(code) + "\n\nReturn the FULL corrected script."}],
                 provider_id, temperature=BUILD_TEMPERATURE, tier="build")
         if nxt.get("error"):
             res["autotest"] = {"ran": True, "passed": False, "rounds": rounds,
@@ -3601,7 +3711,7 @@ def review_code(code, provider_id=None):
     res = call_model([
         {"role": "system", "content": REVIEW_PROMPT},
         {"role": "user", "content":
-            f"Here is the tool to review:\n```python\n{code}\n```\n\n{analyzer_block}"},
+            "Here is the tool to review:\n" + fenced(code) + f"\n\n{analyzer_block}"},
     ], provider_id, tier="build", max_tokens=3000)
     if res.get("error"):
         return res
@@ -3693,7 +3803,7 @@ def make_github(code, details, provider_id=None):
                    f"raw base: https://raw.githubusercontent.com/{user}/{repo}/{branch}/")
     res = call_model([{"role": "system", "content": GITHUB_PROMPT},
                       {"role": "user", "content":
-                       f"Repo details:\n{detail_blob}\n\n=== FINAL CODE ===\n```python\n{code}\n```"}],
+                       f"Repo details:\n{detail_blob}\n\n=== FINAL CODE ===\n" + fenced(code)}],
                      provider_id, tier="cheap", max_tokens=4000)
     if res.get("error"):
         return res
@@ -4376,11 +4486,11 @@ def fix_from_log(code, messages, provider_id=None):
             "log, and (if present) a runtime probe that actually opened the window, watched "
             "whether it stayed up, screenshotted it, and poked it. Diagnose every problem you "
             "can see and return the FULL corrected script. Briefly list what you fixed.\n\n"
-            f"=== CURRENT CODE ===\n```python\n{code}\n```\n\n"
+            "=== CURRENT CODE ===\n" + fenced(code) + "\n\n"
             f"=== RUN LOG ===\n{log_blob}" + extra
         )
     }]
-    return chat_with_autotest(convo, provider_id)
+    return chat_with_autotest(convo, provider_id, base_code=code)
 
 def polish_round(code, messages, provider_id=None):
     """One iteration of the auto-polish loop.
@@ -4515,9 +4625,9 @@ def polish_round(code, messages, provider_id=None):
         convo = [{"role": "system", "content": SYSTEM_PROMPT}, {
             "role": "user",
             "content": (directive +
-                        f"\n\n=== CODE ===\n```python\n{code}\n```\n\n" + evidence_blob)
+                        "\n\n=== CODE ===\n" + fenced(code) + "\n\n" + evidence_blob)
         }]
-        res = chat_with_autotest(convo, provider_id)
+        res = chat_with_autotest(convo, provider_id, base_code=code)
     else:
         # still smoke-test whatever the edits produced
         res = _autotest_existing(res, provider_id)
@@ -4877,7 +4987,11 @@ class Handler(BaseHTTPRequestHandler):
             convo = [m for m in data.get("messages", []) if m.get("role") != "system"]
             messages = [{"role": "system", "content": SYSTEM_PROMPT}] + convo
             provider = data.get("provider")  # optional per-request override
-            self._send(200, chat_with_autotest(messages, provider))
+            # Send the extracted code alongside the reply. The UI used to re-parse
+            # the markdown itself with a simpler matcher, so any reply the two
+            # disagreed about ended up as text in the chat with the code pane
+            # untouched. One extractor, server-side, is the authority now.
+            self._send(200, _with_code(chat_with_autotest(messages, provider)))
         elif self.path == "/api/run":
             result = run_code(data.get("code", ""), data.get("args", ""),
                               bool(data.get("confirm")), data.get("name", "tool"))
@@ -4921,9 +5035,10 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif self.path == "/api/fixlog":
             convo = data.get("messages", [])
-            self._send(200, fix_from_log(data.get("code", ""), convo, data.get("provider")))
+            self._send(200, _with_code(fix_from_log(data.get("code", ""), convo,
+                                                    data.get("provider"))))
         elif self.path == "/api/review":
-            self._send(200, review_code(data.get("code", ""), data.get("provider")))
+            self._send(200, _with_code(review_code(data.get("code", ""), data.get("provider"))))
         elif self.path == "/api/intake":
             self._send(200, make_intake(data.get("request", ""), data.get("provider")))
         elif self.path == "/api/github":
@@ -4980,7 +5095,8 @@ class Handler(BaseHTTPRequestHandler):
                              "cpus": cpu_threads()})
         elif self.path == "/api/polish":
             convo = data.get("messages", [])
-            self._send(200, polish_round(data.get("code", ""), convo, data.get("provider")))
+            self._send(200, _with_code(polish_round(data.get("code", ""), convo,
+                                                    data.get("provider"))))
         elif self.path == "/api/save":
             try:
                 self._send(200, save_tool(data.get("code", ""), data.get("name", "tool"),
