@@ -52,7 +52,7 @@ import urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "2.3.4"
+__version__ = "2.3.5"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --------------------------------------------------------------------------
@@ -1307,16 +1307,30 @@ PRICE_PER_MTOK = {
 }
 
 
-def record_usage(pid, model, usage):
-    """Fold one response's usage into the running totals."""
+def record_usage(pid, model, usage, est_in_chars=0, est_out_chars=0):
+    """Fold one response's usage into the running totals.
+
+    Not every gateway returns a `usage` block. When one didn't, this returned
+    early and the call was not counted AT ALL — not even in `calls`. The cost chip
+    then read zero while real tokens were being spent, which is the one way a
+    spend display can be worse than having none. Fall back to a character estimate
+    and mark the totals as estimated so the UI can say so.
+    """
     try:
-        pin = int(usage.get("prompt_tokens") or 0)
-        pout = int(usage.get("completion_tokens") or 0)
+        pin = int((usage or {}).get("prompt_tokens") or 0)
+        pout = int((usage or {}).get("completion_tokens") or 0)
     except Exception:
-        return
+        pin = pout = 0
+    estimated = False
     if not (pin or pout):
-        return
+        if not (est_in_chars or est_out_chars):
+            return
+        pin = int(est_in_chars / 3.6)
+        pout = int(est_out_chars / 3.6)
+        estimated = True
     with _USAGE_LOCK:
+        if estimated:
+            USAGE["session"]["estimated"] = USAGE["session"].get("estimated", 0) + 1
         USAGE["session"]["in"] += pin
         USAGE["session"]["out"] += pout
         USAGE["session"]["calls"] += 1
@@ -1357,7 +1371,8 @@ def usage_summary():
             continue
         cost += (m["in"] / 1e6) * rate[0] + (m["out"] / 1e6) * rate[1]
     return {"session": sess, "by_model": by,
-            "cost_usd": round(cost, 4), "cost_complete": priced}
+            "cost_usd": round(cost, 4), "cost_complete": priced,
+            "estimated_calls": sess.get("estimated", 0)}
 
 
 def _guess_context_tokens(mid):
@@ -1642,8 +1657,23 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
                 if not dropped:
                     raise
                 data = _http_post(chat_url, headers, body)
-            reply = data["choices"][0]["message"]["content"]
-            record_usage(pid, model, data.get("usage") or {})
+            # Defensive unpacking. `data["choices"][0]["message"]["content"]` has
+            # three ways to blow up or come back empty against a real gateway:
+            # an empty choices list on a soft error, a null content, and reasoning
+            # models that put everything in reasoning_content. All three used to
+            # surface as a blank assistant turn or a cryptic KeyError.
+            choices = data.get("choices") or []
+            if not choices:
+                last = f"{model}: the provider returned no choices"
+                continue
+            msg = choices[0].get("message") or {}
+            reply = msg.get("content") or msg.get("reasoning_content") or ""
+            if not reply.strip():
+                last = f"{model}: the provider returned an empty reply"
+                continue
+            record_usage(pid, model, data.get("usage") or {},
+                         est_in_chars=sum(len(m.get("content") or "") for m in messages),
+                         est_out_chars=len(reply))
             return {"reply": reply, "model": model, "provider": pid,
                     "usage": data.get("usage") or {}}
         except urllib.error.HTTPError as e:

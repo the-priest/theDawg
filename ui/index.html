@@ -915,17 +915,30 @@ async function ingestFiles(fileList){
   for(const file of files){
     if(file.size>MAX_FILE){ toast(`"${file.name}" is too big (max ~800KB)`, true); continue; }
     let text; try{ text=await file.text(); }catch(e){ toast(`Couldn't read "${file.name}"`, true); continue; }
-    if(CODE_EXTS.includes(fileExt(file.name))){ loadedCode={name:file.name, text}; }
+    if(CODE_EXTS.includes(fileExt(file.name))){
+      if(loadedCode) toast(`Only one script can be the tool — using "${file.name}"`, true);
+      loadedCode={name:file.name, text};
+    }
     else{ state.attachments=state.attachments.filter(a=>a.name!==file.name); state.attachments.push({name:file.name,size:file.size,kind:"ref",text}); }
   }
   if(loadedCode) loadCodeFile(loadedCode.name, loadedCode.text);
   renderAttachments();
   if(state.attachments.length) toast(`Attached ${state.attachments.length} file(s) — they'll go with your next message`);
 }
+function fenceFor(code){
+  /* Long enough that the code can't close it from the inside — the same rule the
+     server uses. A loaded .py containing a markdown fence in a help string was
+     otherwise cut in half the moment it entered the conversation. */
+  const runs=String(code||"").match(/`+/g)||[];
+  const longest=runs.reduce((a,r)=>Math.max(a,r.length),0);
+  return "`".repeat(Math.max(3, longest+1));
+}
 function loadCodeFile(fname, text){
   const lines=text.split(String.fromCharCode(10)).length;
+  const F=fenceFor(text);
+  state.attachments=[];   // reference files from the previous tool don't carry over
   state.messages=[
-    {role:"user", content:`I'm bringing in an existing file "${fname}" to work on:\n\`\`\`python\n${text}\n\`\`\``},
+    {role:"user", content:`I'm bringing in an existing file "${fname}" to work on:\n${F}python\n${text}\n${F}`},
     {role:"assistant", content:"Loaded your file into the workspace. Tell me what to debug, fix, improve, or turn into a GUI — or just hit Run."}
   ];
   state.name=(fname.replace(/\.[^.]+$/,"")||"loaded").replace(/[^A-Za-z0-9_\-]/g,"_");
@@ -935,7 +948,11 @@ function loadCodeFile(fname, text){
   $("#thread").innerHTML="";
   addMsg("you", `Loaded: ${fname} (${lines} lines)`);
   addMsg("smith", "Loaded your file into the workspace — it's ready to run, debug, or improve. Tell me what you want to do with it, or hit Run to see how it behaves.");
-  loadCode(text); setVersion("testing");
+  /* keepName: you loaded backup_tool.py, so it stays backup_tool. Without this,
+     loadCode() re-derived the name from the window title inside the file and
+     silently renamed your tool, so ⤓ save wrote a different filename than the
+     one you brought in. */
+  loadCode(text, {keepName:true}); setVersion("testing");
   toast(`Loaded ${fname}`);
 }
 $("#attachBtn").onclick = ()=>$("#fileInput").click();
@@ -1031,7 +1048,9 @@ function paintCost(s){
   const total=(t.in||0)+(t.out||0);
   if(!total){ el.hidden=true; return; }
   const k=n=>n>=1000?(n/1000).toFixed(n>=10000?0:1)+"k":String(n);
-  let txt=`${k(total)} tok`;
+  /* A provider that doesn't report usage gets estimated from character counts.
+     Show the "~" so a number you're budgeting against never pretends to be exact. */
+  let txt=`${u.estimated_calls?"~":""}${k(total)} tok`;
   if(u.cost_usd>0) txt+=`<span class="hc-sep"> \u00b7 </span>$${u.cost_usd.toFixed(3)}${u.cost_complete?"":"+"}`;
   if(t.calls) txt+=`<span class="hc-sep"> \u00b7 </span>${t.calls} call${t.calls===1?"":"s"}`;
   /* Targeted edits are the difference between a 1M budget lasting a few sessions
@@ -1363,7 +1382,7 @@ function loadCode(code, opts){
   opts = opts || {};
   state.prevCode=state.code; state.code=code;
   // NAME/TITLE: derive from the tool's own window title — until the user locks a name.
-  if(!opts.restore && !state.named){
+  if(!opts.restore && !opts.keepName && !state.named){
     const d=deriveName(code);
     if(d){ state.title=d.title; state.name=d.slug; }
   }
@@ -1544,14 +1563,41 @@ $("#saveBtn").onclick=save;
 
 /* ============================ diff ============================ */
 $("#diffBtn").onclick=()=>{ if(state.prevCode && state.code) renderDiff(state.prevCode, state.code); };
+/* A real line diff (longest common subsequence), not set membership.
+
+   The old version asked "does this line appear ANYWHERE in the other version?"
+   That gets two things wrong that matter when you're reading a diff to decide
+   whether to trust a change: a line that merely moved showed as unchanged, and
+   every deletion was dumped in a block at the BOTTOM, detached from the place it
+   was deleted from. You could not see what had been removed from where. */
+function lcsDiff(A, B){
+  const n=A.length, m=B.length;
+  // guard: the DP table is O(n*m); fall back to a plain replace on huge files
+  if(n*m > 4000000){
+    return [...A.map(l=>({t:"del",l})), ...B.map(l=>({t:"add",l}))];
+  }
+  const dp=Array.from({length:n+1},()=>new Uint32Array(m+1));
+  for(let i=n-1;i>=0;i--)
+    for(let j=m-1;j>=0;j--)
+      dp[i][j] = A[i]===B[j] ? dp[i+1][j+1]+1 : Math.max(dp[i+1][j], dp[i][j+1]);
+  const out=[]; let i=0,j=0;
+  while(i<n && j<m){
+    if(A[i]===B[j]){ out.push({t:"ctx",l:A[i]}); i++; j++; }
+    else if(dp[i+1][j] >= dp[i][j+1]){ out.push({t:"del",l:A[i]}); i++; }
+    else { out.push({t:"add",l:B[j]}); j++; }
+  }
+  while(i<n) out.push({t:"del",l:A[i++]});
+  while(j<m) out.push({t:"add",l:B[j++]});
+  return out;
+}
 function renderDiff(a,b){
-  const A=a.split("\n"), B=b.split("\n");
-  const setB=new Set(B), setA=new Set(A);
+  const rows=lcsDiff(a.split("\n"), b.split("\n"));
+  const adds=rows.filter(r=>r.t==="add").length, dels=rows.filter(r=>r.t==="del").length;
   const body=$("#codeBody");
-  let html=`<div class="diff-h"><span>diff — previous → current</span><span class="x" id="diffClose">✕ back to code</span></div><pre class="code">`;
-  B.forEach(line=>{ const cls=setA.has(line)?"ctx":"add"; html+=`<span class="diffline ${cls}">${cls==="add"?"+ ":"  "}${escapeHtml(line)||" "}</span>`; });
-  const removed=A.filter(l=>!setB.has(l));
-  if(removed.length){ html+=`<span class="diffline ctx">  </span>`; removed.forEach(line=>html+=`<span class="diffline del">- ${escapeHtml(line)||" "}</span>`); }
+  const SIGN={ctx:"  ", add:"+ ", del:"- "};
+  let html=`<div class="diff-h"><span>diff — previous → current  ·  +${adds} −${dels}</span>`
+         + `<span class="x" id="diffClose">✕ back to code</span></div><pre class="code">`;
+  rows.forEach(r=>{ html+=`<span class="diffline ${r.t}">${SIGN[r.t]}${escapeHtml(r.l)||" "}</span>`; });
   html+=`</pre>`; body.innerHTML=html;
   $("#diffClose").onclick=()=>renderCode(state.code);
 }
