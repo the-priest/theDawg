@@ -52,7 +52,7 @@ import urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "2.3.5"
+__version__ = "2.3.6"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --------------------------------------------------------------------------
@@ -301,8 +301,8 @@ PROVIDERS = {
         # strongest coding model on this provider (93.5% LiveCodeBench). Flash sits
         # right behind it and does all the cheap auxiliary work: see MODEL_TIERS.
         "models": [
-            "deepseek-ai/DeepSeek-V4-Pro",
             "deepseek-ai/DeepSeek-V4-Flash",
+            "deepseek-ai/DeepSeek-V4-Pro",
             "deepseek-ai/DeepSeek-V3",
             "Qwen/Qwen2.5-72B-Instruct",
             "Qwen/Qwen2.5-Coder-32B-Instruct",
@@ -343,7 +343,7 @@ PROVIDERS = {
 DEFAULT_PROVIDER = "siliconflow"
 # when no model is explicitly chosen, prefer this one on the default provider.
 DEFAULT_MODEL_BY_PROVIDER = {
-    "siliconflow": "deepseek-ai/DeepSeek-V4-Pro",
+    "siliconflow": "deepseek-ai/DeepSeek-V4-Flash",
 }
 
 # ==========================================================================
@@ -357,10 +357,14 @@ DEFAULT_MODEL_BY_PROVIDER = {
 # Routing this way is why "better code" and "cheaper" aren't in tension here:
 # the expensive model runs on fewer, more important calls.
 # ==========================================================================
+# Flash is the default on both tiers now — it's a strong model, it's ~5x cheaper
+# than Pro, and it's what gets picked in Settings. Someone who wants Pro for the
+# harder build work just picks it there and, as of this version, that choice
+# actually sticks. (Google/Groq unchanged — different model families.)
 MODEL_TIERS = {
-    "siliconflow": {"build": "deepseek-ai/DeepSeek-V4-Pro",
+    "siliconflow": {"build": "deepseek-ai/DeepSeek-V4-Flash",
                     "cheap": "deepseek-ai/DeepSeek-V4-Flash"},
-    "novita":      {"build": "deepseek/deepseek-v4-pro",
+    "novita":      {"build": "deepseek/deepseek-v4-flash",
                     "cheap": "deepseek/deepseek-v4-flash"},
     "google":      {"build": "gemini-2.5-pro", "cheap": "gemini-2.5-flash"},
     "groq":        {"build": None, "cheap": None},     # use whatever the chain gives
@@ -1592,15 +1596,31 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
     # configured default (e.g. DeepSeek V4 Flash on SiliconFlow) so the primary model
     # is honoured even though the live catalog is rank-sorted (which would otherwise
     # float the pricier V4 Pro to the top). Whatever we pick is pinned to the front.
-    # A model the user picked in Settings always wins. Otherwise the tier decides:
-    # build work goes to the strong model, clerical work to the cheap one.
-    chosen = (STATE.get("models", {}).get(pid)
-              or (MODEL_TIERS.get(pid) or {}).get(tier)
-              or DEFAULT_MODEL_BY_PROVIDER.get(pid))
+    # Model selection, in priority order:
+    #   1. the model the user picked in Settings — this wins for EVERY tier.
+    #      Previously the pick only led the chain and the entire Pro/V3/Qwen list
+    #      still trailed it, so one transient error on the chosen model dropped
+    #      silently to the next sibling — which is exactly how a box set to V4
+    #      Flash "kept going to Qwen". A deliberate choice is now honoured, not
+    #      treated as merely the first thing to try.
+    #   2. no pick → the tier's model (build=strong, cheap=clerical).
+    #   3. neither → the provider default.
+    user_pick = STATE.get("models", {}).get(pid)
+    chosen = user_pick or (MODEL_TIERS.get(pid) or {}).get(tier) or DEFAULT_MODEL_BY_PROVIDER.get(pid)
     chain = provider_model_chain(pid)
-    if chosen:
-        # match case-insensitively against the live chain so a slightly different
-        # capitalisation from the catalog doesn't create a duplicate entry.
+    if user_pick:
+        # The user named a model. Don't second-guess it by queueing a pile of
+        # other models behind it: try that model (repeated briefly to ride out a
+        # blip), then fall through to OTHER PROVIDERS, not to sibling models the
+        # user didn't choose. This is what makes the setting actually stick.
+        pl = user_pick.lower()
+        live = provider_model_chain(pid)
+        canon = next((m for m in live if m.lower() == pl), user_pick)
+        chain = [canon]
+    elif chosen:
+        # No explicit pick: lead with the tier model but keep the sibling chain as
+        # a real fallback, matched case-insensitively so a capitalisation
+        # difference from the catalog doesn't duplicate the entry.
         cl = chosen.lower()
         chain = [chosen] + [m for m in chain if m.lower() != cl]
 
@@ -1614,6 +1634,11 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
     last = None
     context_hit = False
     _retried_host = [False]   # one-shot host re-discovery guard (mutable for closure-free use)
+    # If the user pinned one model, ride out a transient hiccup on it rather than
+    # abandoning their choice — but only for errors that are actually transient
+    # (timeouts, 5xx, connection resets), never a 400/401/quota which won't fix
+    # itself on a retry.
+    single_pick = len(chain) == 1
     for model in chain:
         # trim to THIS model's context window — the fix for "dies after long use":
         # a small-context model deeper in the chain now gets a request sized for it.
@@ -1729,6 +1754,29 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
                 last = f"{model}: HTTP {e.code} (this model isn't available to your {prov['label']} key)"
                 continue
             last = f"{model}: HTTP {e.code} {detail}"
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            # transient transport error — worth another go on the SAME model
+            last = f"{model}: {e}"
+            if single_pick:
+                for delay in (0.6, 1.5):
+                    time.sleep(delay)
+                    try:
+                        data = _http_post(chat_url, headers, body)
+                        choices = data.get("choices") or []
+                        if not choices:
+                            continue
+                        msg = choices[0].get("message") or {}
+                        reply = msg.get("content") or msg.get("reasoning_content") or ""
+                        if not reply.strip():
+                            continue
+                        record_usage(pid, model, data.get("usage") or {},
+                                     est_in_chars=sum(len(m.get("content") or "") for m in messages),
+                                     est_out_chars=len(reply))
+                        return {"reply": reply, "model": model, "provider": pid,
+                                "usage": data.get("usage") or {}}
+                    except Exception as e2:
+                        last = f"{model}: retry failed: {e2}"
+                        continue
         except Exception as e:
             last = f"{model}: {e}"
 
