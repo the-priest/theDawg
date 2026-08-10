@@ -536,6 +536,173 @@
     font-size:13px;color:var(--ink);box-shadow:0 12px 30px rgba(0,0,0,.4);opacity:0;pointer-events:none;
     transition:.25s;z-index:60}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
+
+  /* ======================================================================
+     v2.4 MAKEOVER — glass over the town
+     Everything below intentionally supersedes earlier rules. The goal: the
+     snowy town shows THROUGH the panels, the workshop reads as frosted glass
+     lit from within, and the code pane hides behind a toggle so the space can
+     show what the AI is actually doing instead.
+     ====================================================================== */
+
+  /* let the town come forward and glow, instead of sitting dead at low opacity */
+  .bg-town{opacity:.62;filter:saturate(1.02) brightness(.82) contrast(1.02)}
+  @keyframes townbreathe{0%,100%{opacity:.55}50%{opacity:.66}}
+  /* a soft aurora wash that drifts over the town, tinted with the theme accents */
+  .bg-fx::before{content:"";position:absolute;inset:-20%;pointer-events:none;
+    background:
+      radial-gradient(50% 40% at 22% 12%, rgba(70,199,212,.10), transparent 70%),
+      radial-gradient(46% 42% at 82% 8%, rgba(199,155,224,.10), transparent 70%),
+      radial-gradient(60% 50% at 50% 108%, rgba(224,122,58,.12), transparent 70%);
+    animation:aurora 32s ease-in-out infinite alternate;mix-blend-mode:screen}
+  @keyframes aurora{from{transform:translate3d(-2%,-1%,0) scale(1.02)}
+    to{transform:translate3d(2%,1%,0) scale(1.06)}}
+
+  /* PANELS become glass: much lower opacity, stronger blur, a hairline highlight */
+  .dialogue{
+    background:linear-gradient(180deg,rgba(18,22,25,.52),rgba(11,14,15,.60));
+    backdrop-filter:blur(26px) saturate(1.15);border-right:1px solid rgba(255,255,255,.06);
+    box-shadow:inset -1px 0 0 rgba(255,255,255,.03)}
+  .wh,.testbar,.testtop{
+    background:linear-gradient(180deg,rgba(20,24,27,.55),rgba(16,19,21,.42));
+    backdrop-filter:blur(20px) saturate(1.1);border-bottom:1px solid rgba(255,255,255,.05)}
+  .codebody{background:rgba(9,11,12,.60);backdrop-filter:blur(22px) saturate(.9)}
+  .console{background:rgba(9,11,12,.44);backdrop-filter:blur(16px)}
+
+  /* frosted, translucent bubbles — the town is visible behind them */
+  .msg.smith .bubble{
+    background:linear-gradient(180deg,rgba(28,34,38,.46),rgba(20,24,27,.52));
+    backdrop-filter:blur(14px) saturate(1.1);
+    border:1px solid rgba(255,255,255,.07);border-left:2px solid var(--amber);
+    border-radius:var(--r3);padding:12px 15px;
+    box-shadow:0 8px 26px -14px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.05)}
+  .msg.you .bubble{
+    background:linear-gradient(180deg,rgba(70,199,212,.10),rgba(70,199,212,.05));
+    backdrop-filter:blur(10px);color:var(--steel);
+    border:1px solid rgba(70,199,212,.20);border-radius:var(--r3);
+    padding:11px 14px;align-self:flex-end;max-width:82%}
+  .msg.you{display:flex;flex-direction:column;align-items:flex-end}
+  .msg.you .who{color:var(--cyan);flex-direction:row-reverse}
+  .composer .box{background:rgba(14,17,19,.55);backdrop-filter:blur(18px) saturate(1.1);
+    border:1px solid rgba(255,255,255,.08)}
+  .composer{border-top:1px solid rgba(255,255,255,.05);
+    background:linear-gradient(0deg,rgba(11,14,15,.4),transparent)}
+
+  /* the whole workspace column gets the same glass so the town runs edge to edge */
+  html:not(.noart) .work{background:linear-gradient(180deg,rgba(13,16,18,.30),rgba(9,11,12,.42))}
+
+  /* ---- CODE TOGGLE: code hidden by default, revealed on click ---- */
+  .codewrap{position:relative}
+  .code-toggle{margin-left:auto;display:inline-flex;align-items:center;gap:7px;
+    font-family:var(--mono);font-size:11px;color:var(--dim);cursor:pointer;
+    padding:6px 12px;border:1px solid rgba(255,255,255,.09);border-radius:999px;
+    background:rgba(255,255,255,.03);transition:all .14s var(--ease);user-select:none}
+  .code-toggle:hover{color:var(--ink);border-color:var(--amber);background:rgba(232,163,61,.08)}
+  .code-toggle .eye{font-size:13px}
+  /* Default view shows the code pane (which also holds the starters + the
+     cold-forge empty state). While a build runs — html.building — the activity
+     panel takes over so you watch the work. The 👁 toggle overrides either way
+     via html.showcode / html.hidecode. */
+  #activityPanel{display:none;flex-direction:column}
+  #codeBody{display:block}
+  html.building:not(.showcode) #activityPanel{display:flex}
+  html.building:not(.showcode) #codeBody{display:none}
+  html.showcode #activityPanel{display:none}
+  html.showcode #codeBody{display:block}
+  html.hidecode #activityPanel{display:flex}
+  html.hidecode #codeBody{display:none}
+
+  /* ---- ACTIVITY PANEL: what the AI is doing, in the space the code freed ---- */
+  #activityPanel{flex-direction:column;min-height:0;overflow:auto;padding:0}
+  .act-hero{padding:22px 22px 14px;display:flex;flex-direction:column;gap:4px;
+    border-bottom:1px solid rgba(255,255,255,.05)}
+  .act-hero .stage{font-family:var(--mono);font-size:12px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--amber);display:flex;align-items:center;gap:9px}
+  .act-hero .stage .orb{width:9px;height:9px;border-radius:50%;background:var(--amber);
+    box-shadow:0 0 0 0 rgba(232,163,61,.5);animation:pulse 1.6s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(232,163,61,.45)}
+    70%{box-shadow:0 0 0 10px rgba(232,163,61,0)}100%{box-shadow:0 0 0 0 rgba(232,163,61,0)}}
+  .act-hero.idle .orb{background:var(--faint);animation:none;box-shadow:none}
+  .act-hero.idle .stage{color:var(--faint)}
+  .act-hero .detail{color:var(--dim);font-size:13px;min-height:18px}
+
+  .act-feed{flex:1;overflow:auto;padding:10px 18px 20px;display:flex;flex-direction:column;gap:2px}
+  .act-step{display:flex;gap:12px;padding:9px 0;animation:rise .3s ease both}
+  .act-step .rail{display:flex;flex-direction:column;align-items:center;flex:0 0 auto;width:18px}
+  .act-step .node{width:12px;height:12px;border-radius:50%;border:2px solid var(--line);
+    background:var(--panel);margin-top:2px;flex:0 0 auto;transition:all .2s var(--ease)}
+  .act-step .stalk{width:2px;flex:1;background:var(--line2);margin-top:3px;min-height:8px}
+  .act-step:last-child .stalk{display:none}
+  .act-step.ok .node{border-color:var(--lime);background:var(--lime);box-shadow:0 0 10px rgba(159,224,74,.5)}
+  .act-step.fail .node{border-color:var(--red);background:var(--red);box-shadow:0 0 10px rgba(224,89,74,.5)}
+  .act-step.active .node{border-color:var(--amber);background:var(--amber);
+    animation:pulse 1.5s infinite}
+  .act-step .body{flex:1;min-width:0}
+  .act-step .head{font-size:13px;color:var(--ink);display:flex;align-items:center;gap:8px}
+  .act-step .head .t{font-family:var(--mono);font-size:10px;color:var(--faint);margin-left:auto}
+  .act-step .sub{font-size:12px;color:var(--dim);margin-top:3px;line-height:1.5}
+  .act-step .sub code{font-family:var(--mono);font-size:11px;color:var(--ember);
+    background:rgba(224,122,58,.10);padding:1px 5px;border-radius:4px}
+  .act-step .problems{margin-top:6px;display:flex;flex-direction:column;gap:3px}
+  .act-step .problems .p{font-family:var(--mono);font-size:11px;color:var(--red);
+    background:rgba(224,89,74,.08);border-left:2px solid rgba(224,89,74,.4);
+    padding:4px 9px;border-radius:0 5px 5px 0;line-height:1.45}
+  /* the reasoning trace — how the model actually thought */
+  .act-reason{margin:2px 0 2px 30px;border-left:2px solid rgba(199,155,224,.3);
+    padding:8px 14px;background:rgba(199,155,224,.05);border-radius:0 8px 8px 0}
+  .act-reason .rh{font-family:var(--mono);font-size:10px;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--mag);margin-bottom:5px;display:flex;align-items:center;gap:6px}
+  .act-reason .rt{font-size:12.5px;color:var(--steel);line-height:1.6;white-space:pre-wrap;
+    max-height:180px;overflow:auto}
+  .act-empty{margin:auto;text-align:center;color:var(--faint);padding:40px 20px}
+  .act-empty .big{font-size:34px;margin-bottom:12px;opacity:.5}
+  .act-empty h3{font-size:15px;color:var(--dim);font-weight:600;margin:0 0 6px}
+  .act-empty p{font-size:12.5px;line-height:1.6;max-width:280px;margin:0 auto}
+
+  /* mini code preview inside the activity panel when a version lands */
+  .act-codecard{margin:8px 18px 4px;border:1px solid rgba(255,255,255,.07);border-radius:var(--r2);
+    overflow:hidden;background:rgba(9,11,12,.5)}
+  .act-codecard .cc-h{display:flex;align-items:center;gap:8px;padding:8px 12px;
+    border-bottom:1px solid rgba(255,255,255,.05);font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .act-codecard .cc-h .grow{flex:1}
+  .act-codecard .cc-h .open{color:var(--amber);cursor:pointer}
+  .act-codecard pre{margin:0;padding:10px 12px;max-height:160px;overflow:auto;
+    font-family:var(--mono);font-size:11px;line-height:1.55;color:var(--steel)}
+
+  /* status dot in the titlebar reflects live activity */
+  .tb-status.working{color:var(--amber);animation:pulse 1.4s infinite}
+  .tb-status.ok{color:var(--lime)}
+  .tb-status.err{color:var(--red)}
+
+  /* buttons: a touch more glass, brighter accent lift */
+  .btn{background:linear-gradient(180deg,rgba(30,36,40,.6),rgba(20,24,27,.55));
+    border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(8px)}
+  .btn.ghost{background:rgba(255,255,255,.02)}
+  .btn:hover:not(:disabled){background:linear-gradient(180deg,rgba(38,45,50,.7),rgba(26,31,34,.6))}
+
+  /* richer, readable error styling in the console */
+  .err-card{border:1px solid rgba(224,89,74,.3);border-radius:var(--r2);overflow:hidden;
+    margin:2px 0 6px;background:rgba(224,89,74,.05)}
+  .err-card .eh{display:flex;align-items:center;gap:8px;padding:8px 12px;
+    background:rgba(224,89,74,.12);font-weight:700;color:#ff9c8f;font-size:12.5px}
+  .err-card .eb{padding:9px 12px;font-family:var(--mono);font-size:11.5px;color:var(--steel);
+    line-height:1.6;white-space:pre-wrap;word-break:break-word}
+  .err-card .fix{padding:8px 12px;border-top:1px solid rgba(224,89,74,.2);
+    display:flex;gap:8px;align-items:center;font-size:12px;color:var(--dim)}
+  .err-card .fix b{color:var(--amber)}
+
+  /* the step rail across the top gets glass + a moving fill */
+  .steprail{background:linear-gradient(180deg,rgba(16,19,21,.4),rgba(12,14,15,.3));
+    backdrop-filter:blur(14px);border-bottom:1px solid rgba(255,255,255,.04)}
+  .top{background:linear-gradient(180deg,rgba(15,19,21,.55),rgba(11,14,15,.4));
+    backdrop-filter:blur(20px);border-bottom:1px solid rgba(255,255,255,.05)}
+
+  /* reduce-motion users get calm */
+  @media (prefers-reduced-motion:reduce){
+    .bg-fx::before,.snow,.act-hero .orb,.act-step.active .node,.tb-status.working,
+    .bg-town{animation:none!important}
+  }
+
 </style>
 </head>
 <body>
@@ -605,7 +772,7 @@
     </div>
     <div class="spacer"></div>
     <select id="providerPick" class="provider-pick" title="Which model builds your tools"></select>
-    <div class="host-chip cost" id="costChip" title="tokens used this session, and roughly what they cost. Build turns use V4 Pro; naming, intake and README work go to V4 Flash." hidden></div>
+    <div class="host-chip cost" id="costChip" title="tokens used this session, and roughly what they cost. Uses your selected model (V4 Flash by default) for everything." hidden></div>
     <div class="host-chip" id="hostChip" title="the machine TheDawg is building for — it decides which package manager it teaches the model to use" hidden></div>
     <div class="model-pill"><span class="dot" id="modelDot"></span><span id="modelName">connecting…</span></div>
     <button class="icon-btn" id="libBtn" title="Tool library">▤</button>
@@ -657,8 +824,11 @@
     <div class="work">
       <div class="codewrap">
         <div class="wh">
-          <span class="label">tool</span>
+          <span class="label">workshop</span>
           <span class="fname" id="codeFile">no draft yet</span>
+          <span class="code-toggle" id="codeToggle" title="Show or hide the source code">
+            <span class="eye">👁</span><span id="codeToggleLabel">show code</span>
+          </span>
           <div class="acts">
             <span class="act-group inspect">
               <button class="btn ghost" id="reviewBtn" disabled title="AI + static analysis review of the whole tool">🔍 review</button>
@@ -674,6 +844,19 @@
               <button class="btn release" id="releaseBtn" disabled>◆ get ready for GitHub</button>
               <button class="btn build" id="buildBtn" disabled title="Pack into a single-file Linux binary (PyInstaller)">⬛ build</button>
             </span>
+          </div>
+        </div>
+        <div class="activity" id="activityPanel">
+          <div class="act-hero idle" id="actHero">
+            <div class="stage"><span class="orb"></span><span id="actStage">idle</span></div>
+            <div class="detail" id="actDetail">Describe a tool on the left — you'll watch it get built here.</div>
+          </div>
+          <div class="act-feed" id="actFeed">
+            <div class="act-empty" id="actEmpty">
+              <div class="big">🔨</div>
+              <h3>The forge is cold</h3>
+              <p>When you send a request, this space shows exactly what TheDawg is doing — planning, writing, testing, and fixing — step by step, with the model's own reasoning. The finished code lives one click away under <b>show code</b>.</p>
+            </div>
           </div>
         </div>
         <div class="codebody" id="codeBody">
@@ -1285,15 +1468,128 @@ function dismissFollowup(){
   state._followupEl=null;
 }
 
+/* ==================== activity feed engine ==================== */
+const AV = { steps:[], el:()=>$("#actFeed"), started:false };
+function actReset(){
+  AV.steps=[]; AV.started=false;
+  const f=AV.el(); if(f) f.innerHTML="";
+  setStage("idle","Describe a tool on the left — you'll watch it get built here.", true);
+}
+function setStage(stage, detail, idle){
+  const h=$("#actHero"); if(!h) return;
+  h.classList.toggle("idle", !!idle);
+  $("#actStage").textContent=stage;
+  if(detail!=null) $("#actDetail").textContent=detail;
+  const tb=$("#tbStatus");
+  if(tb){ tb.classList.remove("working","ok","err");
+    if(!idle) tb.classList.add("working"); }
+}
+function actEmptyGone(){ const e=$("#actEmpty"); if(e) e.remove(); AV.started=true; }
+function actStep(kind, head, sub, opts={}){
+  actEmptyGone();
+  const f=AV.el(); if(!f) return null;
+  const row=document.createElement("div"); row.className="act-step active";
+  row.innerHTML=`<div class="rail"><div class="node"></div><div class="stalk"></div></div>`
+    +`<div class="body"><div class="head"><span>${escapeHtml(head)}</span>`
+    +`<span class="t">${new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span></div>`
+    +(sub?`<div class="sub">${sub}</div>`:"")
+    +(opts.problems?`<div class="problems">${opts.problems.map(p=>`<div class="p">${escapeHtml(p)}</div>`).join("")}</div>`:"")
+    +`</div>`;
+  // demote the previously-active step
+  const prev=f.querySelector(".act-step.active");
+  if(prev){ prev.classList.remove("active"); prev.classList.add(opts.prevState||"ok"); }
+  f.appendChild(row); f.scrollTop=f.scrollHeight;
+  return row;
+}
+function actReason(text){
+  actEmptyGone();
+  const f=AV.el(); if(!f) return;
+  const d=document.createElement("div"); d.className="act-reason";
+  d.innerHTML=`<div class="rh">💭 how it's thinking</div><div class="rt">${escapeHtml(text)}</div>`;
+  f.appendChild(d); f.scrollTop=f.scrollHeight;
+}
+function actFinish(ok){
+  const f=AV.el(); const last=f&&f.querySelector(".act-step.active");
+  if(last){ last.classList.remove("active"); last.classList.add(ok?"ok":"fail"); }
+  setStage(ok?"done":"needs attention",
+    ok?"Build complete — the code is ready under “show code”.":"Finished with issues — see the console.", true);
+  const tb=$("#tbStatus"); if(tb){ tb.classList.remove("working"); tb.classList.add(ok?"ok":"err"); }
+}
+
+/* map a server activity event onto the feed */
+function onActivity(ev){
+  switch(ev.kind){
+    case "thinking":
+      setStage("planning", ev.text||"Thinking it through");
+      actStep("thinking","Planning the tool", ev.text||""); break;
+    case "reasoning":
+      if(ev.text) actReason(ev.text); break;
+    case "writing":
+      setStage("writing code", `Writing ${ev.lines||"the"} lines${ev.name?" · "+ev.name:""}`);
+      actStep("writing", ev.attempt>1?`Rewriting (round ${ev.attempt})`:"Writing the code",
+        `${ev.lines||"?"} lines${ev.name?` · <code>${escapeHtml(ev.name)}</code> toolkit`:""}`); break;
+    case "testing":
+      setStage("testing", ev.text||"Running automatic checks");
+      actStep("testing","Auto-testing", ev.text||""); break;
+    case "check_ok":
+      setStage("checks passed", ev.text||"All checks passed");
+      { const f=AV.el(); const a=f&&f.querySelector(".act-step.active");
+        if(a){ a.classList.remove("active"); a.classList.add("ok"); } } break;
+    case "check_fail":
+      { const f=AV.el(); const a=f&&f.querySelector(".act-step.active");
+        if(a){ a.classList.remove("active"); a.classList.add("fail"); } }
+      actStep("fail",`Found ${ev.problems?ev.problems.length:"some"} issue${ev.problems&&ev.problems.length===1?"":"s"}`,
+        "The checks caught real problems — fixing them now:", {problems:ev.problems||[], prevState:"fail"}); break;
+    case "fixing":
+      setStage("fixing", ev.text||"Correcting the issues");
+      actStep("fixing",`Fixing (round ${ev.attempt||"2"})`, ev.text||""); break;
+  }
+}
+
+/* stream a build; falls back to a single POST if streaming is unavailable */
+async function streamBuild(payload, onEvent){
+  const resp = await fetch("/api/chat/stream",{method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
+  if(!resp.ok || !resp.body) throw new Error("no stream");
+  const reader=resp.body.getReader(); const dec=new TextDecoder(); let buf="", result=null;
+  for(;;){
+    const {value, done}=await reader.read(); if(done) break;
+    buf+=dec.decode(value, {stream:true});
+    let idx;
+    while((idx=buf.indexOf("\n\n"))>=0){
+      const chunk=buf.slice(0,idx); buf=buf.slice(idx+2);
+      const line=chunk.split("\n").find(l=>l.startsWith("data:"));
+      if(!line) continue;
+      let ev; try{ ev=JSON.parse(line.slice(5).trim()); }catch(_){ continue; }
+      if(ev.kind==="ping") continue;
+      if(ev.kind==="result"){ result=ev.result; continue; }
+      onEvent(ev);
+    }
+  }
+  return result;
+}
+
 async function converse(){
-  state.busy=true; $("#sendBtn").disabled=true; $("#sendBtn").classList.add("busy"); addThinking();
-  let res;
+  state.busy=true; $("#sendBtn").disabled=true; $("#sendBtn").classList.add("busy");
+  addThinking();
+  actReset(); setStage("starting","Sending your request to the model");
+  document.documentElement.classList.add("building");
+  document.documentElement.classList.remove("showcode","hidecode");
+  state._codeManual=false;
+  let res=null;
+  const payload={messages:state.messages, provider:$("#providerPick").value};
   try{
-    res = await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({messages:state.messages, provider:$("#providerPick").value})}).then(r=>r.json());
-  }catch(e){ res={error:"Could not reach the local server."}; }
+    res = await streamBuild(payload, onActivity);
+    if(res===null) throw new Error("stream ended without a result");
+  }catch(e){
+    // graceful fallback to the plain endpoint
+    try{
+      res = await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(payload)}).then(r=>r.json());
+    }catch(_){ res={error:"Could not reach the local server."}; }
+  }
   clearThinking(); state.busy=false; $("#sendBtn").disabled=false; $("#sendBtn").classList.remove("busy");
-  if(res.error){ addMsg("smith", fmtError(res)); return; }
+  if(!res || res.error){ actFinish(false); addMsg("smith", fmtError(res||{})); return; }
   $("#modelName").textContent=res.model || $("#modelName").textContent;
   $("#modelDot").classList.add("on");
 
@@ -1302,8 +1598,13 @@ async function converse(){
   if(code){
     loadCode(code);
     if(state.pendingRelease){ setVersion("release"); state.pendingRelease=false; } else setVersion("testing");
-    playSound("done");
+    playSound("done");                    // the "done" chime, now on every finished build
+    actFinish(res.autotest ? res.autotest.passed!==false : true);
+  } else {
+    setStage("idle", null, true);
   }
+  document.documentElement.classList.remove("building");
+  const tog=$("#codeToggle"); if(tog) tog.style.display = state.code ? "inline-flex" : "none";
   let flag=null;
   if(hadCode){
     flag=`${state.name}.py v${String(state.ver).replace(/^v/,"")} · ${state.version} version`;
@@ -1314,12 +1615,24 @@ async function converse(){
       else flag += `  ·  ⚠ auto-test still failing after ${rounds} tr${rounds>1?"ies":"y"} — run it to see`;
     }
   }
-  addMsg("smith", prose || (code?"Here's the build — try it in the test panel.":res.reply), flag);
+  addMsg("smith", prose || (code?"Here's the build — watch the steps above, then hit ▶ launch or 🔎 self-test.":res.reply), flag);
   state.messages.push({role:"assistant", content:res.reply});
-  // If the model asked a question instead of building, offer tappable answers for it.
   if(!code && res.followup && res.followup.questions && res.followup.questions.length){
     renderFollowup(res.followup);
   }
+}
+
+/* ==================== code visibility toggle ==================== */
+function showCode(on, byUser){
+  const d=document.documentElement;
+  d.classList.toggle("showcode", !!on);
+  d.classList.toggle("hidecode", !on);
+  if(byUser) state._codeManual=true;
+  const lbl=$("#codeToggleLabel"), eye=document.querySelector("#codeToggle .eye");
+  if(lbl) lbl.textContent = on ? "show activity" : "show code";
+  if(eye) eye.textContent = on ? "◧" : "◨";
+  const tog=$("#codeToggle");
+  if(tog) tog.style.display = state.code ? "inline-flex" : "none";
 }
 
 /* The server sends `code` with every chat/polish reply, extracted by the one
@@ -1701,6 +2014,7 @@ $("#libSaveBtn").onclick=async ()=>{
   toast(`Saved "${state.name}" to library — its state is banked`);
 };
 $("#libBtn").onclick=()=>openPanel(state._panelTab||"sessions");
+$("#codeToggle").onclick=()=>showCode(!document.documentElement.classList.contains("showcode"), true);
 $("#libClose").onclick=()=>$("#libPanel").classList.remove("on");
 $("#tabSessions").onclick=()=>openPanel("sessions");
 $("#tabLibrary").onclick=()=>openPanel("library");
@@ -1927,7 +2241,7 @@ async function run(confirmed){
     let html=`<span class="meta">${cmdLine}</span>\n\n`;
     if(res.launched){ showStop(res.pid); html+=`<span class="ok">✓ window launched · ${res.seconds}s</span>\n`; html+=`<span class="out">${esc(res.note||"GUI is open on your desktop.")}</span>`; if(res.stderr) html+=`\n<span class="meta">startup notes:</span>\n<span class="meta">${esc(res.stderr)}</span>`; }
     else if(res.exit===0){ showStop(null); html+=`<span class="ok">✓ ran and exited cleanly · ${res.seconds}s</span>`; if(res.stderr) html+=`\n<span class="meta">${esc(res.stderr)}</span>`; }
-    else{ showStop(null); html+=`<span class="bad">✗ the GUI failed to start · exit ${res.exit} · ${res.seconds}s</span>\n\n`; html+=`<span class="bad">${esc(res.stderr||"")}</span>`; html+=`\n<span class="meta">— double-click here, or paste this on the left, and I'll fix it</span>`; state.lastError=res.stderr; }
+    else{ showStop(null); html+=`<span class="bad">✗ the GUI failed to start · exit ${res.exit} · ${res.seconds}s</span>\n\n`; html+=errCard(res.stderr||""); state.lastError=res.stderr; }
     con.innerHTML=html; con.scrollTop=con.scrollHeight; return;
   }
   showStop(null);
@@ -1936,7 +2250,8 @@ async function run(confirmed){
   if(res.stderr) html+=`<span class="bad">${esc(res.stderr)}</span>`;
   if(!res.stdout && !res.stderr) html+=`<span class="placeholder">(no output)</span>`;
   html+=`\n<span class="meta">────────────</span>\n`;
-  html+=res.exit===0?`<span class="ok">✓ exit 0 · ${res.seconds}s · clean</span>`:`<span class="bad">✗ exit ${res.exit} · ${res.seconds}s</span>  <span class="meta">— paste the error to me on the left and I'll fix it</span>`;
+  if(res.exit===0){ html+=`<span class="ok">✓ exit 0 · ${res.seconds}s · clean</span>`; }
+  else{ html+=`<span class="bad">✗ exit ${res.exit} · ${res.seconds}s</span>\n`; if(res.stderr) html+=errCard(res.stderr); }
   con.innerHTML=html; con.scrollTop=con.scrollHeight;
   if(res.exit!==0 && res.stderr) state.lastError=res.stderr;
 }
@@ -2006,6 +2321,7 @@ $("#fixLogBtn").onclick=async ()=>{
 let polishing=false, polishAbort=null;
 function endPolish(msg){
   polishing=false;
+  if(msg && /done|converged/.test(msg)) playSound("done");
   state.busy=false; $("#sendBtn").disabled=false;
   if(polishAbort){ try{ polishAbort.abort(); }catch(e){} polishAbort=null; }
   const btn=$("#polishBtn"); btn.classList.remove("running"); btn.textContent="✦ auto-polish loop";
@@ -2112,7 +2428,7 @@ function applyModelResult(res, introIfProse){
   $("#modelName").textContent=res.model||$("#modelName").textContent; reflectKey(true);
   const {prose, code}=splitReply(res.reply, res.code);
   let flag=null;
-  if(code){ loadCode(code); setVersion("testing"); flag=`${state.name}.py v${String(state.ver).replace(/^v/,"")}`; const at=res.autotest; if(at && at.ran) flag+=at.passed?"  ·  ✓ auto-tested":"  ·  ⚠ check still failing"; }
+  if(code){ loadCode(code); setVersion("testing"); playSound("done"); flag=`${state.name}.py v${String(state.ver).replace(/^v/,"")}`; const at=res.autotest; if(at && at.ran) flag+=at.passed?"  ·  ✓ auto-tested":"  ·  ⚠ check still failing"; }
   addMsg("smith", prose||introIfProse||"Done.", flag);
   state.messages.push({role:"assistant", content:res.reply});
 }
@@ -2222,6 +2538,52 @@ $("#newBtn").onclick=()=>{
 const _ESC={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>_ESC[c]); }
 function escapeHtml(s){ return esc(s); }
+/* Turn a raw Python traceback into a short, human explanation + the exact line.
+   Errors should say what's wrong, not just dump a stack. */
+const ERR_HELP = {
+  ModuleNotFoundError:"A package it needs isn't installed. Use ⬇ deps to add it, or I can switch to a library that's already here.",
+  ImportError:"An import failed — either a missing package or a name that doesn't exist in it.",
+  SyntaxError:"The code has a syntax slip — usually a missing bracket, quote or colon.",
+  IndentationError:"The indentation is off on that line.",
+  NameError:"It used a name that was never defined — often a typo or a missing import.",
+  AttributeError:"It called something that doesn't exist on that object — often a wrong method name.",
+  TypeError:"A function got the wrong kind or number of arguments.",
+  FileNotFoundError:"It tried to open a file or resource that isn't there.",
+  KeyError:"It looked up a dictionary key that doesn't exist.",
+  IndexError:"It indexed past the end of a list.",
+  ValueError:"A value wasn't in the form the code expected.",
+  PermissionError:"The OS refused the operation — usually a file-permission or port issue.",
+  ConnectionError:"A network connection failed.",
+};
+function explainTraceback(text){
+  if(!text) return null;
+  const lines=text.replace(/\r/g,"").split("\n").filter(l=>l.length);
+  // last "Type: message" line is the actual error
+  let errLine=null;
+  for(let i=lines.length-1;i>=0;i--){
+    const m=lines[i].match(/^([A-Za-z_][A-Za-z0-9_.]*Error|[A-Za-z_][A-Za-z0-9_.]*Exception|SystemExit|KeyboardInterrupt):?\s?(.*)$/);
+    if(m){ errLine={type:m[1].split(".").pop(), msg:m[2]||""}; break; }
+  }
+  // last "File ..., line N, in ..." for the location in THEIR file
+  let loc=null;
+  for(let i=lines.length-1;i>=0;i--){
+    const m=lines[i].match(/File "([^"]+)", line (\d+)(?:, in (.+))?/);
+    if(m && !/site-packages|lib\/python|<frozen/.test(m[1])){ loc={file:m[1].split("/").pop(), line:m[2], fn:m[3]||""}; break; }
+  }
+  if(!errLine) return null;
+  return {type:errLine.type, msg:errLine.msg, loc, help:ERR_HELP[errLine.type]||"", raw:text.trim()};
+}
+function errCard(text){
+  const ex=explainTraceback(text);
+  if(!ex) return `<div class="err-card"><div class="eh">✗ error</div><div class="eb">${esc(text||"unknown error")}</div></div>`;
+  const where=ex.loc?` · <b>line ${ex.loc.line}</b>${ex.loc.fn?" in "+esc(ex.loc.fn)+"()":""}`:"";
+  return `<div class="err-card">`
+    +`<div class="eh">✗ ${esc(ex.type)}${where}</div>`
+    +`<div class="eb">${esc(ex.msg||ex.raw)}</div>`
+    +(ex.help?`<div class="fix"><b>likely cause:</b> ${esc(ex.help)}</div>`:"")
+    +`<div class="fix">↩ double-click the console or hit <b>⮐ send log to AI &amp; fix</b> to have it corrected</div>`
+    +`</div>`;
+}
 function fmtError(res){
   if(res.error==="context_overflow") return "⚠ "+(res.detail||"This conversation got too long for the model. Start a new tool (＋ new tool) to reset — your library is safe.");
   return "⚠ "+(res.detail?res.error+" — "+res.detail:res.error);

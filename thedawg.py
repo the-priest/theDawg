@@ -52,7 +52,7 @@ import urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "2.3.6"
+__version__ = "2.4.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --------------------------------------------------------------------------
@@ -1699,8 +1699,14 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
             record_usage(pid, model, data.get("usage") or {},
                          est_in_chars=sum(len(m.get("content") or "") for m in messages),
                          est_out_chars=len(reply))
-            return {"reply": reply, "model": model, "provider": pid,
-                    "usage": data.get("usage") or {}}
+            out = {"reply": reply, "model": model, "provider": pid,
+                   "usage": data.get("usage") or {}}
+            # a distinct reasoning trace (present on reasoning models when content
+            # is also set) is worth showing the user — it's the "how it thinks"
+            rc = msg.get("reasoning_content")
+            if rc and rc.strip() and rc.strip() != reply.strip():
+                out["reasoning"] = rc.strip()
+            return out
         except urllib.error.HTTPError as e:
             detail = _err_detail(e)
             low = detail.lower()
@@ -3622,6 +3628,77 @@ def _wants_fresh_build(text):
                                 "new tool", "completely different", "throw it away"))
 
 
+# ==========================================================================
+# ACTIVITY CHANNEL
+#
+# The build is a sequence of real stages — the model thinks, writes, then
+# TheDawg lint-fixes, smoke-tests, and (if needed) feeds specific failures back
+# for another round. The user used to see none of that: a spinner, then an
+# answer. This channel lets each stage announce itself, and the /api/chat/stream
+# endpoint relays those announcements to the UI live. It's the actual pipeline
+# narrating itself, not a decorative animation.
+# ==========================================================================
+_ACTIVITY = threading.local()
+
+
+def _emit(kind, **data):
+    """Push one activity event to the channel bound to THIS build thread, if any.
+    A no-op when nothing is listening, so every code path works with or without a
+    stream attached."""
+    ch = getattr(_ACTIVITY, "chan", None)
+    if ch is not None:
+        try:
+            ch.put({"kind": kind, **data})
+        except Exception:
+            pass
+
+
+class ActivityChannel:
+    """A bounded queue of build events with a sentinel to mark completion."""
+    def __init__(self):
+        import queue
+        self.q = queue.Queue(maxsize=256)
+        self.done = object()
+
+    def put(self, ev):
+        try:
+            self.q.put_nowait(ev)
+        except Exception:
+            pass  # a slow reader must never stall the build
+
+    def finish(self, result):
+        self.q.put({"kind": "result", "result": result})
+        self.q.put(self.done)
+
+    def drain(self, timeout=0.5):
+        import queue
+        try:
+            ev = self.q.get(timeout=timeout)
+        except queue.Empty:
+            return None
+        return ev
+
+
+def run_with_activity(fn):
+    """Run build fn in a worker thread with an activity channel bound to it, and
+    return (channel, thread). The caller relays events until the sentinel."""
+    chan = ActivityChannel()
+
+    def _worker():
+        _ACTIVITY.chan = chan
+        try:
+            result = fn()
+        except Exception as e:
+            result = {"error": f"{type(e).__name__}: {e}"}
+        finally:
+            _ACTIVITY.chan = None
+        chan.finish(result)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    return chan, t
+
+
 def chat_with_autotest(messages, provider_id=None, base_code=None):
     """Call the model, then silently smoke-test any code it returns, feeding
     failures back for up to AUTOTEST_MAX_ROUNDS before returning to the user."""
@@ -3673,9 +3750,13 @@ def chat_with_autotest(messages, provider_id=None, base_code=None):
     # Lower temperature on code generation: more deterministic, fewer hallucinated
     # APIs and careless slips. Reasoning paths (intake/review) keep the default 0.3.
     if res is None:
+        _emit("thinking", text="Reading your request and planning the tool")
         res = call_model(convo, provider_id, temperature=BUILD_TEMPERATURE, tier="build")
     if res.get("error"):
         return res
+    # surface the model's own reasoning trace when the gateway returns one
+    if res.get("reasoning"):
+        _emit("reasoning", text=res["reasoning"])
 
     for attempt in range(AUTOTEST_MAX_ROUNDS + 1):
         code = extract_code(res.get("reply", ""))
@@ -3693,10 +3774,18 @@ def chat_with_autotest(messages, provider_id=None, base_code=None):
         if applied and fixed != code:
             res["reply"] = replace_first_code_block(res.get("reply", ""), fixed)
             code = fixed
+        _emit("writing", lines=len(code.splitlines()),
+              attempt=attempt + 1, name=(detect_toolkit(code) or {}).get("label"))
+        _emit("testing", text="Checking it parses, imports and passes static analysis")
         passed, report, checks = smoke_test(code)
         # also surface any non-fatal analysis notes (minor findings) for visibility
         minor = [note for name, ok, note in checks if name == "analysis" and ok and note
                  and ("minor only" in note)]
+        if passed:
+            _emit("check_ok", text="All automatic checks passed")
+        else:
+            _emit("check_fail", attempt=attempt + 1,
+                  problems=[ln for ln in (report or "").splitlines() if ln.strip()][:6])
         rounds.append({"attempt": attempt + 1, "passed": passed,
                        "checks": [c[0] for c in checks if c[1]],
                        "failed": [c[0] for c in checks if not c[1]],
@@ -3709,6 +3798,9 @@ def chat_with_autotest(messages, provider_id=None, base_code=None):
         # FEED THE FAILURE BACK with a structural map so the fix is informed, not blind.
         # Giving the model a map of its own code + the exact analyzer findings produces a
         # far better fix than just "it failed, try again" (the agentic-loop pattern).
+        if attempt < AUTOTEST_MAX_ROUNDS:
+            _emit("fixing", attempt=attempt + 2,
+                  text="Feeding the exact failures back and correcting them")
         cmap = code_map(code)
         fix_msg = (f"Your code failed an automatic quality check before I saw it. "
                    f"Fix the SPECIFIC problems below and return the FULL corrected script "
@@ -4880,6 +4972,47 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._fail(e)
 
+    def _stream_build(self, fn):
+        """Relay ActivityChannel events to the client as SSE frames."""
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+        except Exception:
+            return
+
+        def frame(ev):
+            try:
+                self.wfile.write(b"data: " + json.dumps(ev, separators=(",", ":")).encode() + b"\n\n")
+                self.wfile.flush()
+                return True
+            except (BrokenPipeError, ConnectionResetError, ValueError):
+                return False
+
+        chan, thread = run_with_activity(fn)
+        idle = 0
+        while True:
+            ev = chan.drain(timeout=0.5)
+            if ev is None:
+                idle += 1
+                if not frame({"kind": "ping"}):
+                    break
+                if idle > 240:
+                    frame({"kind": "result", "result": {"error": "the build timed out"}})
+                    break
+                continue
+            idle = 0
+            if ev is chan.done:
+                break
+            if not frame(ev):
+                break
+        try:
+            thread.join(timeout=1)
+        except Exception:
+            pass
+
     def _fail(self, exc):
         try:
             self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
@@ -5060,6 +5193,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"provider": pid, "model": model})
             else:
                 self._send(200, {"error": "unknown model for this provider"})
+        elif self.path == "/api/chat/stream":
+            # Server-Sent Events: run the build in a worker thread and relay every
+            # activity event live, then a final "result". A client that can't
+            # stream just calls /api/chat instead — same result.
+            convo = [m for m in data.get("messages", []) if m.get("role") != "system"]
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}] + convo
+            provider = data.get("provider")
+            self._stream_build(lambda: _with_code(chat_with_autotest(messages, provider)))
         elif self.path == "/api/chat":
             # The methodology prompt is authoritative and lives here, server-side.
             convo = [m for m in data.get("messages", []) if m.get("role") != "system"]
