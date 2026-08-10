@@ -1519,6 +1519,11 @@ function actFinish(ok){
 /* map a server activity event onto the feed */
 function onActivity(ev){
   switch(ev.kind){
+    case "stage":
+      // provider-level status: "calling model…", "rate-limited, trying next…",
+      // "unreachable, retrying…". These were dropped on the floor, so a slow
+      // provider fallback looked like a dead build. Show the line at least.
+      if(ev.text) setStage("working", ev.text); break;
     case "thinking":
       setStage("planning", ev.text||"Thinking it through");
       actStep("thinking","Planning the tool", ev.text||""); break;
@@ -2148,7 +2153,10 @@ $("#ghGenerate").onclick=async ()=>{
     rel=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({messages:msgs, provider:$("#providerPick").value})}).then(r=>r.json());
   }catch(e){ rel={error:"server"}; }
   if(rel.error){ state.pendingRelease=false; toast("⚠ "+rel.error, true); resetGhBtn(); return; }
-  const {code:relCode}=splitReply(rel.reply);
+  // Pass rel.code (the server's authoritative extraction) so the release/repo
+  // never gets truncated by the simpler client-side fence matcher — a tool whose
+  // --help contains a ``` example closed a plain ``` fence early otherwise.
+  const {code:relCode}=splitReply(rel.reply, rel.code);
   /* pendingRelease was set on the way in and then never cleared — not on the
      success path (which calls setVersion directly and never consumes the flag)
      and not on any of the three error returns. It stayed true for the rest of

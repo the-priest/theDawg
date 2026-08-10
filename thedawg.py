@@ -52,7 +52,7 @@ import urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "2.5.0"
+__version__ = "2.5.4"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --------------------------------------------------------------------------
@@ -377,7 +377,18 @@ MAX_TOKENS = {"build": 32000, "cheap": 2000}
 # DeepSeek V4 exposes graded reasoning effort. On the build path it's worth
 # paying for — it's the difference between code that runs and code that nearly
 # runs. Everywhere else it's off.
-REASONING_EFFORT = {"build": "high", "cheap": None}
+#
+# SPEED LEVER: "high" is the dominant wall-clock cost of a build (the model burns
+# a large hidden reasoning budget before it writes a line). Drop it without
+# touching source by exporting THEDAWG_REASONING=medium (or low / none) — medium
+# is typically ~2x faster to first token and still writes solid single-file tools;
+# high stays the default so nobody's build quality changes unless they ask for it.
+_REASON = (os.environ.get("THEDAWG_REASONING") or "high").strip().lower()
+if _REASON in ("none", "off", ""):
+    _REASON = None
+elif _REASON not in ("low", "medium", "high"):
+    _REASON = "high"
+REASONING_EFFORT = {"build": _REASON, "cheap": None}
 
 # Fields some gateways reject outright. Once a (provider, model, field) 400s we
 # stop sending it rather than burning a retry on every future call.
@@ -387,7 +398,12 @@ FALLBACK_PROVIDERS = ["groq"]
 
 # auto-test loop: after the model writes code, TheDawg silently checks it and
 # feeds failures back to the model up to this many times before showing you.
-AUTOTEST_MAX_ROUNDS = 3
+# Each round that fires is another full model round-trip, so this is also a speed
+# lever: export THEDAWG_AUTOTEST_ROUNDS=1 to cap the worst case at two calls.
+try:
+    AUTOTEST_MAX_ROUNDS = max(0, min(5, int(os.environ.get("THEDAWG_AUTOTEST_ROUNDS", "3"))))
+except ValueError:
+    AUTOTEST_MAX_ROUNDS = 3
 
 # temperature used ONLY for code generation / auto-fix. Lower than the 0.3 default
 # used elsewhere: code wants determinism, not creativity — fewer invented APIs and
@@ -1030,10 +1046,16 @@ def library_load(tid):
 
 def library_delete(tid):
     path = os.path.join(LIBRARY_DIR, _safe_id(tid) + ".json")
+    # Deleting is idempotent: if it's already gone the caller got what they
+    # wanted. Leaking a raw "[Errno 2] No such file..." string into the UI on a
+    # double-click or a stale list was noise, not an error.
     try:
-        os.remove(path); return {"ok": True}
+        os.remove(path)
+    except FileNotFoundError:
+        pass
     except Exception as e:
         return {"error": str(e)}
+    return {"ok": True}
 
 # --------------------------------------------------------------------------
 # SESSIONS  -- live works-in-progress (auto-saved as you build), like chats
@@ -1085,9 +1107,12 @@ def session_load(sid):
 
 def session_delete(sid):
     try:
-        os.remove(os.path.join(SESSION_DIR, _safe_id(sid) + ".json")); return {"ok": True}
+        os.remove(os.path.join(SESSION_DIR, _safe_id(sid) + ".json"))
+    except FileNotFoundError:
+        pass
     except Exception as e:
         return {"error": str(e)}
+    return {"ok": True}
 
 # --------------------------------------------------------------------------
 # GUI TOOLKITS  -- detect which windowing toolkit a tool uses, and how to get it
@@ -1255,17 +1280,16 @@ def looks_dangerous(code):
     return out
 
 def _http_post(url, headers, body, timeout=45):
-    import socket
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers)
-    # socket-level timeout so a dead endpoint fails in seconds instead of freezing
-    # the "forging" spinner for minutes. Covers both connect and subsequent reads.
-    _prev = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(timeout)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    finally:
-        socket.setdefaulttimeout(_prev)
+    # urlopen's own timeout bounds BOTH connect and read for this socket, so a dead
+    # endpoint fails in seconds instead of freezing the "forging" spinner. We do NOT
+    # touch socket.setdefaulttimeout(): that's process-global, and _http_post runs on
+    # concurrent worker threads (a polish round while a build is in flight, the
+    # parallel model-fetch threads at startup). Racing threads restoring that global
+    # could leave EVERY other socket in the process — the HTTP server, the Xvfb
+    # waits — stuck on this timeout.
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode())
 
 # --------------------------------------------------------------------------
 # CONTEXT BUDGET  -- keep requests under the ACTIVE model's real window
@@ -1749,7 +1773,12 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
                             # spend never reached the usage counter.
                             try:
                                 data = _http_post(chat_url, headers, body)
-                                reply = data["choices"][0]["message"]["content"]
+                                choices = data.get("choices") or []
+                                msg = (choices[0].get("message") if choices else {}) or {}
+                                reply = msg.get("content") or msg.get("reasoning_content") or ""
+                                if not reply.strip():
+                                    last = f"{model}: empty reply from {_HOST_OK[pid]}"
+                                    continue
                                 record_usage(pid, model, data.get("usage") or {})
                                 return {"reply": reply, "model": model, "provider": pid,
                                         "usage": data.get("usage") or {}}
@@ -1762,9 +1791,16 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
                                     "endpoint (cloud.siliconflow.com \u2194 api.siliconflow.com)."
                                     if pid == "siliconflow" else "")}
             if e.code == 429:
+                # Rate-limited. Trying another MODEL on the same provider won't help
+                # (shared quota), but the whole point of FALLBACK_PROVIDERS is that a
+                # quota stop shouldn't dead-end the build — so break out of this
+                # provider's chain and let _try_fallback() reach Groq below. Returning
+                # here (as it used to) skipped the fallback entirely, which is why a
+                # 429 hard-failed despite the "trying next..." message above.
                 _emit("stage", text=f"{prov['label']} rate-limited this request (429) — trying next...")
-                return {"error": f"{prov['label']} rate-limited this request (429): "
-                                 f"{detail or 'slow down or check your quota'}."}
+                last = (f"{prov['label']} rate-limited this request (429): "
+                        f"{detail or 'slow down or check your quota'}.")
+                break
             if e.code in (404, 400):
                 # this specific model name isn't callable with your key — try the next
                 last = f"{model}: HTTP {e.code} (this model isn't available to your {prov['label']} key)"
@@ -2331,6 +2367,23 @@ def _unassigned_self_attrs(tree):
         for m in cls.body:
             if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 assigned_attrs.add(m.name)
+            # Class-level attributes are real attributes reachable through self:
+            #   class C:
+            #       count = 0            # -> self.count is defined
+            #       label: str = "x"     # annotated with a value, likewise
+            # Missing these produced a false "self.count read but never assigned",
+            # which made the model rewrite correct code. Count a bare annotation
+            # (label: str) too — it's a declared slot the class intends to carry.
+            elif isinstance(m, ast.Assign):
+                for t in m.targets:
+                    if isinstance(t, ast.Name):
+                        assigned_attrs.add(t.id)
+                    elif isinstance(t, (ast.Tuple, ast.List)):
+                        for e in t.elts:
+                            if isinstance(e, ast.Name):
+                                assigned_attrs.add(e.id)
+            elif isinstance(m, ast.AnnAssign) and isinstance(m.target, ast.Name):
+                assigned_attrs.add(m.target.id)
         assigned_attrs |= {"__class__", "__dict__", "__doc__", "__module__"}
         for attr, ln in read_attrs.items():
             if attr not in assigned_attrs:
@@ -3824,7 +3877,11 @@ def chat_with_autotest(messages, provider_id=None, base_code=None):
         # A fix round is by definition a small, targeted change, so patch it rather
         # than resending the whole build conversation and retyping the whole file.
         # Before: ~18.5k in + 7.7k out. After: ~8k in + ~200 out.
-        nxt = try_edit_round(code, fix_msg, provider_id=provider_id)
+        # retries=0 here on purpose: this is already the remedial path and the user
+        # is waiting on it. If the patch format misses we fall straight to the full
+        # rewrite below instead of spending an extra high-effort model round-trip
+        # trying to correct the patch — one fewer call on every fix that misses.
+        nxt = try_edit_round(code, fix_msg, provider_id=provider_id, retries=0)
         if nxt is None:
             convo = convo + [
                 {"role": "assistant", "content": res["reply"]},
@@ -4445,12 +4502,17 @@ def write_github_repo(code, name, gh, details):
     # silently truncates the entry and the launcher stops working
     comment = " ".join(str(gh.get("description")
                            or (repo + " — built with TheDawg")).split())[:200]
+    # Exec runs the CLI launcher install.sh drops on PATH. The old line used
+    # `%h/.local/share/...` — but %h is NOT a Desktop Entry field code (the spec
+    # only defines %f %F %u %U %i %c %k and a few more), so it never expanded to
+    # $HOME and the menu entry silently failed to launch for anyone who copied
+    # this shipped file by hand. The bare command name is valid and portable.
     desktop = (
         "[Desktop Entry]\n"
         "Type=Application\n"
         f"Name={name}\n"
         f"Comment={comment}\n"
-        f"Exec=python3 %h/.local/share/{repo}/{name}.py\n"
+        f"Exec={name}\n"
         "Terminal=false\n"
         f"StartupWMClass={name}\n"
         "StartupNotify=true\n"
@@ -4986,10 +5048,21 @@ class Handler(BaseHTTPRequestHandler):
     def _stream_build(self, fn):
         """Relay ActivityChannel events to the client as SSE frames."""
         try:
+            # An event stream has no Content-Length and we don't chunk it, so on
+            # HTTP/1.1 the ONLY way the client can tell the response has ended is
+            # the socket closing. Without this the browser's ReadableStream reader
+            # blocks on read() forever after the final `result` frame — the build
+            # is done, the code is built, but converse() never reaches
+            # state.busy=false and the whole UI sits frozen with the send button
+            # disabled. Force a non-keep-alive connection for the stream: announce
+            # it in the header AND tell BaseHTTPRequestHandler to close the socket
+            # once this handler returns.
+            self.close_connection = True
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache, no-transform")
             self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
             self.end_headers()
         except Exception:
             return
