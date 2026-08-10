@@ -52,7 +52,7 @@ import urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --------------------------------------------------------------------------
@@ -1254,10 +1254,18 @@ def looks_dangerous(code):
             out.append("line %d: %s" % (line, " ".join(m.group(0).split())[:80]))
     return out
 
-def _http_post(url, headers, body, timeout=120):
+def _http_post(url, headers, body, timeout=45):
+    import socket
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode())
+    # socket-level timeout so a dead endpoint fails in seconds instead of freezing
+    # the "forging" spinner for minutes. Covers both connect and subsequent reads.
+    _prev = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(timeout)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    finally:
+        socket.setdefaulttimeout(_prev)
 
 # --------------------------------------------------------------------------
 # CONTEXT BUDGET  -- keep requests under the ACTIVE model's real window
@@ -1640,6 +1648,7 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
     # itself on a retry.
     single_pick = len(chain) == 1
     for model in chain:
+        _emit("stage", text=f"Calling {prov['label']} model {model}...")
         # trim to THIS model's context window — the fix for "dies after long use":
         # a small-context model deeper in the chain now gets a request sized for it.
         messages = trim_history(raw_messages, model)
@@ -1753,6 +1762,7 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
                                     "endpoint (cloud.siliconflow.com \u2194 api.siliconflow.com)."
                                     if pid == "siliconflow" else "")}
             if e.code == 429:
+                _emit("stage", text=f"{prov['label']} rate-limited this request (429) — trying next...")
                 return {"error": f"{prov['label']} rate-limited this request (429): "
                                  f"{detail or 'slow down or check your quota'}."}
             if e.code in (404, 400):
@@ -1762,6 +1772,7 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
             last = f"{model}: HTTP {e.code} {detail}"
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             # transient transport error — worth another go on the SAME model
+            _emit("stage", text=f"{model} unreachable ({e}) — retrying...")
             last = f"{model}: {e}"
             if single_pick:
                 for delay in (0.6, 1.5):
