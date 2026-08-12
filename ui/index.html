@@ -2337,16 +2337,17 @@ $("#dangerCancel").onclick=()=>closeScrim("dangerScrim");
 $("#dangerConfirm").onclick=()=>{ closeScrim("dangerScrim"); run(true); };
 
 /* ============================ self-test (runtime probe) ============================ */
-$("#probeBtn").onclick=async ()=>{
+$("#probeBtn").onclick=()=>selfTest(false);
+async function selfTest(confirmed){
   if(!state.code || state.busy) return;
   const con=$("#console");
   con.innerHTML=`<span class="meta">$ self-test — opening the window on a hidden display and looking at it…</span>\n<span class="placeholder">running…</span>`;
   let res;
   try{ res=await fetch("/api/probe",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({code:state.code, name:state.name})}).then(r=>r.json()); }
+        body:JSON.stringify({code:state.code, name:state.name, confirm:!!confirmed})}).then(r=>r.json()); }
   catch(e){ con.innerHTML=`<span class="bad">Couldn't reach the local TheDawg server.</span>`; return; }
   renderProbe(res);
-};
+}
 function renderProbe(res){
   const con=$("#console");
   /* A destructive-code block is not the same as "couldn't run on this box" — it
@@ -2366,6 +2367,17 @@ function renderProbe(res){
     head = "✓ the window opens and stays up — rendering NOT verified on this box (see note)";
   else head = "✓ the window opens, stays up and renders real content";
   con.innerHTML = `<span class="${cls}">${esc(head)}</span>\n\n<span class="out">${esc(res.report||"")}</span>`;
+  /* A paused self-test needs a way forward. It used to be a dead end: the tool
+     was never run, the polish loop stopped, and there was no button anywhere
+     that said "yes, that IS what this tool does". */
+  if(blocked && res.confirmable){
+    const go=document.createElement("button");
+    go.className="btn"; go.textContent="⚠ run it anyway";
+    go.style.marginTop="10px";
+    go.onclick=()=>selfTest(true);
+    con.appendChild(document.createTextNode("\n"));
+    con.appendChild(go);
+  }
   con.scrollTop=0;
   const wrap=$("#shotWrap"), img=$("#shotImg"), verdict=$("#shotVerdict");
   if(res.shot){
@@ -2678,6 +2690,9 @@ function errCard(text){
 }
 function fmtError(res){
   if(res.error==="context_overflow") return "⚠ "+(res.detail||"This conversation got too long for the model. Start a new tool (＋ new tool) to reset — your library is safe.");
+  /* A decline isn't a fault, so don't render it as one — no ⚠, no "error —"
+     prefix, and the model's own words rather than a TheDawg paraphrase. */
+  if(res.error==="declined") return res.detail||"The model declined this request.";
   return "⚠ "+(res.detail?res.error+" — "+res.detail:res.error);
 }
 let toastT;

@@ -50,9 +50,10 @@ import subprocess
 import urllib.request
 import urllib.error
 from pathlib import Path
+import http.client            # IncompleteRead / RemoteDisconnected are retryable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "2.5.6"
+__version__ = "2.5.7"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --------------------------------------------------------------------------
@@ -725,8 +726,14 @@ DANGER = [
     # POSIX
     r"rm\s+-rf\s+/", r"rm\s+-rf\s+~", r"rm\s+-rf\s+\$HOME", r"rm\s+-rf\s+\*",
     r":\(\)\s*\{", r"shutil\.rmtree\(\s*['\"]/", r"\bmkfs\b",
-    r"dd\s+if=", r"\bof=/dev/sd", r"os\.system\(\s*['\"]\s*rm\b", r">\s*/dev/sd",
-    r"os\.fork\s*\(\)", r"shutil\.rmtree\(\s*os\.path\.expanduser",
+    # `dd` is only destructive when it WRITES to a raw device. `dd if=/dev/sda
+    # of=backup.img` is a read — a perfectly ordinary thing for a disk-imaging
+    # tool to do — and flagging it stopped that whole category of tool from
+    # being self-tested at all.
+    r"\bdd\b[^\n]*\bof=/dev/", r"\bof=/dev/sd", r"os\.system\(\s*['\"]\s*rm\b", r">\s*/dev/sd",
+    # os.fork() was in this list for fork bombs, but the bomb pattern above
+    # already catches those, and forking is how any tool daemonises itself.
+    r"shutil\.rmtree\(\s*os\.path\.expanduser",
     # Windows
     r"format\s+[a-zA-Z]:\s*/[a-zA-Z]",                  # format c: /q
     r"del\s+/[sSqQfF]\s+/[sSqQfF]",                     # del /s /q /f ...
@@ -1307,19 +1314,81 @@ def run_python(code=None):
 # ==========================================================================
 # helpers
 # ==========================================================================
+def _code_without_prose(code):
+    """The source with COMMENTS and DOCSTRINGS blanked out. Line numbers preserved.
+
+    looks_dangerous() matched the raw file, so prose tripped it: a tool whose
+    module docstring documents a `dd` example, a comment reading "never run
+    rm -rf /". The tool did nothing dangerous — it TALKED about something
+    dangerous — and TheDawg then refused to self-test it.
+
+    Comments and docstrings only. NOT every string literal: a destructive command
+    almost always lives inside one — os.system("rm -rf /") — so blanking strings
+    wholesale would switch the entire check off. A help string that isn't a
+    docstring can therefore still trip it, and that is the right way round to be
+    wrong: a false positive now costs one click, a false negative costs the
+    machine. Falls back to the raw source if the file doesn't parse.
+    """
+    try:
+        import ast as _ast
+        import io as _io
+        import tokenize as _tok
+        src = code or ""
+        out = list(src)
+        starts, pos = [], 0
+        for ln in src.splitlines(keepends=True):
+            starts.append(pos)
+            pos += len(ln)
+
+        def _blank(a, b):
+            if a is None or b is None:
+                return
+            for i in range(max(0, a), min(b, len(out))):
+                if out[i] != "\n":
+                    out[i] = " "
+
+        def _off(row, col):
+            return starts[row - 1] + col if 0 < row <= len(starts) else None
+
+        for t in _tok.generate_tokens(_io.StringIO(src).readline):
+            if t.type == _tok.COMMENT:
+                _blank(_off(*t.start), _off(*t.end))
+
+        tree = _ast.parse(src)
+        for node in _ast.walk(tree):
+            if not isinstance(node, (_ast.Module, _ast.ClassDef,
+                                     _ast.FunctionDef, _ast.AsyncFunctionDef)):
+                continue
+            body = getattr(node, "body", None) or []
+            if not body:
+                continue
+            first = body[0]
+            if (isinstance(first, _ast.Expr) and isinstance(first.value, _ast.Constant)
+                    and isinstance(first.value.value, str)):
+                _blank(_off(first.lineno, first.col_offset),
+                       _off(first.end_lineno, first.end_col_offset))
+        return "".join(out)
+    except Exception:
+        return code or ""
+
+
 def looks_dangerous(code):
-    """Destructive patterns found in the code, as the TEXT THAT MATCHED.
+    """Destructive patterns found in the EXECUTABLE code, as the text that matched.
 
     This used to hand back the regex sources, which is what the confirm dialog
     then showed the user — the pattern instead of the line actually in their tool.
     Nobody can make an informed decision about a regex.
     """
+    scan = _code_without_prose(code)
     out = []
     for pat in DANGER:
-        m = re.search(pat, code or "")
+        m = re.search(pat, scan)
         if m:
-            line = (code or "")[:m.start()].count("\n") + 1
-            out.append("line %d: %s" % (line, " ".join(m.group(0).split())[:80]))
+            line = scan[:m.start()].count("\n") + 1
+            # report the REAL line from the original source, not the blanked copy
+            src = (code or "").splitlines()
+            text = src[line - 1].strip() if 0 < line <= len(src) else m.group(0)
+            out.append("line %d: %s" % (line, " ".join(text.split())[:100]))
     return out
 
 # ==========================================================================
@@ -1362,6 +1431,75 @@ MODEL_IDLE_TIMEOUT = _env_int("THEDAWG_IDLE_TIMEOUT", 90, 15, 600)
 # stay short so a wedged helper can't hold a build up.
 MODEL_TIMEOUT = {"build": _env_int("THEDAWG_TIMEOUT", 900, 60, 3600),
                  "cheap": _env_int("THEDAWG_TIMEOUT_CHEAP", 120, 20, 900)}
+
+
+# ==========================================================================
+# RETRY POLICY
+#
+# THE BUG THIS EXISTS TO FIX: "most of the time it works perfectly and
+# sometimes it tells me to refresh model."
+#
+# A 502/503 from a busy gateway is a routine, self-healing event. TheDawg had NO
+# retry for it. And because a model pinned in Settings makes the chain exactly
+# one model long, that single hiccup exhausted the chain instantly — 0.0
+# seconds — and, with no fallback provider key configured, dead-ended on
+# "chain failed. Try Settings -> refresh models", which is advice for a
+# completely different problem. Same for an empty reply, an empty choices list,
+# and a connection the provider dropped mid-request.
+#
+# So: classify the failure, and retry the ones that are worth retrying.
+_RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504, 507, 520, 521, 522, 523, 524, 529}
+MODEL_RETRIES = _env_int("THEDAWG_RETRIES", 4, 0, 10)
+_RETRY_CAP = 20.0          # never sit on a backoff longer than this
+
+
+class _UnusableReply(Exception):
+    """HTTP said 200, but there is nothing in the response to use.
+
+    An empty `content`, an empty `choices` list — both happen on real gateways
+    under load, and both used to burn the whole model chain on the first
+    occurrence instead of simply asking again.
+    """
+
+
+def _retry_wait(attempt, exc=None):
+    """Backoff for attempt N, honouring Retry-After when the server sent one."""
+    if exc is not None:
+        try:
+            ra = (exc.headers or {}).get("Retry-After")
+        except Exception:
+            ra = None
+        if ra:
+            try:
+                want = float(str(ra).strip())
+                # A server asking for longer than the cap is telling us to go
+                # away; let the caller fall through to another model/provider
+                # rather than freezing the UI on a long sleep.
+                if 0 < want <= _RETRY_CAP:
+                    return want
+            except ValueError:
+                pass
+    base = min(_RETRY_CAP, 0.8 * (2.2 ** attempt))
+    # jitter so two concurrent calls (a polish round beside a build) don't
+    # synchronise and hammer the same second
+    return base * (0.75 + 0.5 * _rand())
+
+
+def _rand():
+    import random
+    return random.random()
+
+
+def _is_idle_timeout(exc):
+    """A read that ran out of patience — as opposed to a connection that died.
+
+    The distinction decides whether re-sending is smart or wasteful. A timeout
+    means the provider may STILL be generating our answer, and a re-send buys a
+    second full generation on the bill. A reset/refused/incomplete-read means
+    this request is definitively gone, and asking again is exactly right.
+    """
+    return isinstance(exc, TimeoutError) or isinstance(
+        getattr(exc, "reason", None), (TimeoutError, socket.timeout))
 
 
 def _http_post(url, headers, body, timeout=None):
@@ -1744,6 +1882,30 @@ def trim_history(messages, model=None):
         running += _msg_len(result[idx]) - biggest
     return result
 
+_REFUSAL_RE = re.compile(
+    r"^\W{0,3}(?:i(?:'m| am)? (?:sorry|afraid)\b|i (?:can(?:'|no)?t|won'?t|am unable to|"
+    r"cannot) (?:help|assist|provide|create|write|build|do that)|"
+    r"unfortunately,? i (?:can'?t|cannot)|i must decline|as an ai\b)",
+    re.I)
+
+
+def _looks_like_refusal(reply):
+    """True when a reply is the model declining rather than building.
+
+    Deliberately narrow: it only fires on a decline in the OPENING of the reply,
+    and never when the reply carries code. A tool that happens to print "Sorry,
+    that file doesn't exist" must not read as a refusal, and neither must a build
+    that merely mentions a limitation in passing.
+    """
+    text = (reply or "").strip()
+    if not text or "```" in text:
+        return False                      # it produced code; that's a build
+    if len(text) > 1500:
+        return False                      # a decline is short; an explanation isn't
+    head = text[:240]
+    return bool(_REFUSAL_RE.search(head))
+
+
 def _err_detail(exc):
     """Read an HTTPError's body at most once and cache it on the exception.
 
@@ -1833,6 +1995,7 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
     #   2. no pick → the tier's model (build=strong, cheap=clerical).
     #   3. neither → the provider default.
     user_pick = STATE.get("models", {}).get(pid)
+    pinned = None                     # the model the user chose, if they chose one
     chosen = user_pick or (MODEL_TIERS.get(pid) or {}).get(tier) or DEFAULT_MODEL_BY_PROVIDER.get(pid)
     chain = provider_model_chain(pid)
     if user_pick:
@@ -1843,7 +2006,17 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
         pl = user_pick.lower()
         live = provider_model_chain(pid)
         canon = next((m for m in live if m.lower() == pl), user_pick)
-        chain = [canon]
+        # The pick LEADS the chain; the siblings sit behind it as a last resort.
+        #
+        # This used to be `chain = [canon]` — your model or nothing. The intent was
+        # right (a deliberate choice shouldn't be abandoned on one blip) but with a
+        # one-model chain, one blip WAS the whole chain: a single 502 dead-ended
+        # the request. Now that _post() retries transient failures properly, the
+        # only way we reach a sibling is after every retry on your model has been
+        # spent — that isn't "silently dropping to Qwen", it's the difference
+        # between a working build and an error message. It says so when it happens.
+        chain = [canon] + [m for m in live if m.lower() != pl]
+        pinned = canon
     elif chosen:
         # No explicit pick: lead with the tier model but keep the sibling chain as
         # a real fallback, matched case-insensitively so a capitalisation
@@ -1860,6 +2033,7 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
 
     last = None
     context_hit = False
+    refusals = []                 # (model, text) for models that declined outright
     _retried_host = [False]   # one-shot host re-discovery guard (mutable for closure-free use)
     # If the user pinned one model, ride out a transient hiccup on it rather than
     # abandoning their choice — but only for errors that are actually transient
@@ -1876,7 +2050,9 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
         _emit("gen", chars=nchars, reasoning=nreason,
               secs=int(elapsed), model=model)
 
-    def _post(b):
+    provider_degraded = [False]     # set once a 5xx exhausts a model's retry budget
+
+    def _post_once(b):
         """One request. Streams unless this (provider, model) proved it can't."""
         if (pid, model, "stream") in _UNSUPPORTED_FIELDS:
             return _http_post(chat_url, headers, b, timeout=total_timeout)
@@ -1890,14 +2066,77 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
             det = _err_detail(he).lower()
             if he.code in (400, 404, 422, 501) and "stream_options" in det:
                 _UNSUPPORTED_FIELDS.add((pid, model, "stream_options"))
-                return _post(b)
+                return _post_once(b)
             if he.code in (400, 404, 422, 501) and "stream" in det:
                 # this gateway won't stream — remember it and take the plain path
                 _UNSUPPORTED_FIELDS.add((pid, model, "stream"))
                 return _http_post(chat_url, headers, b, timeout=total_timeout)
             raise
 
+    def _post(b):
+        """_post_once, with the retry policy wrapped around it.
+
+        This is the whole answer to "sometimes it tells me to refresh model".
+        A 502, a 503, a dropped connection, an empty reply — all of them used to
+        end the request on the first occurrence. Now each one is simply asked
+        again, backed off, up to MODEL_RETRIES times, before anything is
+        allowed to fail.
+        """
+        # Once one model has spent its whole retry budget on 5xx, the PROVIDER is
+        # having the problem, not the model. Paying the full budget again on each
+        # sibling just makes the user wait four times as long for the same answer,
+        # so the rest of the chain gets one attempt each and we move on to the
+        # fallback provider quickly.
+        budget = 1 if provider_degraded[0] else MODEL_RETRIES
+        attempt = 0
+        while True:
+            try:
+                data = _post_once(b)
+            except urllib.error.HTTPError as he:
+                if he.code in _RETRY_STATUS and attempt >= budget and he.code >= 500:
+                    provider_degraded[0] = True
+                if he.code in _RETRY_STATUS and attempt < budget:
+                    wait = _retry_wait(attempt, he)
+                    attempt += 1
+                    _emit("stage", text=f"{prov['label']} returned {he.code} — "
+                                        f"retrying in {wait:.0f}s "
+                                        f"(attempt {attempt} of {budget})")
+                    time.sleep(wait)
+                    continue
+                raise
+            except (urllib.error.URLError, ConnectionError, TimeoutError,
+                    http.client.HTTPException) as e:
+                # A read timeout is NOT retried here: the provider may still be
+                # generating, and re-sending buys a second full generation. Every
+                # other transport failure means this request is definitively
+                # gone, so asking again is the right move.
+                if _is_idle_timeout(e) or attempt >= budget:
+                    raise
+                wait = _retry_wait(attempt)
+                attempt += 1
+                _emit("stage", text=f"connection to {prov['label']} dropped ({e}) — "
+                                    f"retrying in {wait:.0f}s "
+                                    f"(attempt {attempt} of {budget})")
+                time.sleep(wait)
+                continue
+            # HTTP was fine; is there anything in it?
+            _reply, _finish = _unpack_reply(data)
+            if not _reply.strip() and _finish != "length":
+                if attempt < budget:
+                    wait = _retry_wait(attempt)
+                    attempt += 1
+                    _emit("stage", text=f"{model} returned an empty reply — "
+                                        f"retrying in {wait:.0f}s "
+                                        f"(attempt {attempt} of {budget})")
+                    time.sleep(wait)
+                    continue
+                raise _UnusableReply("the provider kept returning an empty reply")
+            return data
+
     for model in chain:
+        if pinned and model != pinned:
+            _emit("stage", text=f"{pinned} isn't answering after {MODEL_RETRIES} tries — "
+                                f"falling back to {model} so the build still happens")
         _emit("stage", text=f"Calling {prov['label']} model {model}...")
         # trim to THIS model's context window — the fix for "dies after long use":
         # a small-context model deeper in the chain now gets a request sized for it.
@@ -1977,6 +2216,17 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
             record_usage(pid, model, data.get("usage") or {},
                          est_in_chars=sum(len(m.get("content") or "") for m in messages),
                          est_out_chars=len(reply))
+            # A model that declines the job is not a finished build. It used to be
+            # treated as one: no code in the reply, so the follow-up helper spent
+            # another call turning "I can't help with that" into tappable
+            # "questions", and the user got a fake intake instead of a tool.
+            # Models differ a lot on this — the next one in the chain will often
+            # just build it — so move on rather than presenting a decline as work.
+            if tier == "build" and _looks_like_refusal(reply):
+                last = f"{model}: declined the request"
+                _emit("stage", text=f"{model} declined this one — trying the next model")
+                refusals.append((model, reply.strip()[:400]))
+                continue
             out = {"reply": reply, "model": model, "provider": pid,
                    "usage": data.get("usage") or {}}
             if finish == "length":
@@ -2073,25 +2323,10 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
                                     f"(no data for {MODEL_IDLE_TIMEOUT}s) — moving on")
             else:
                 _emit("stage", text=f"{model} unreachable ({e}) — retrying...")
-            if single_pick and not timed_out and spent < 20:
-                for delay in (0.6, 1.5):
-                    time.sleep(delay)
-                    try:
-                        data = _post(body)
-                        reply, finish = _unpack_reply(data)
-                        if not reply.strip():
-                            continue
-                        record_usage(pid, model, data.get("usage") or {},
-                                     est_in_chars=sum(len(m.get("content") or "") for m in messages),
-                                     est_out_chars=len(reply))
-                        out = {"reply": reply, "model": model, "provider": pid,
-                               "usage": data.get("usage") or {}}
-                        if finish == "length":
-                            out["truncated"] = True
-                        return out
-                    except Exception as e2:
-                        last = f"{model}: retry failed: {e2}"
-                        continue
+            # No ad-hoc retry loop here any more: _post() already backed this
+            # request off and re-sent it up to MODEL_RETRIES times before the
+            # exception reached us. Retrying again on top of that just doubled
+            # the spend on a provider that is genuinely down.
         except Exception as e:
             last = f"{model}: {e}"
 
@@ -2121,8 +2356,63 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
     alt = _try_fallback(last)
     if alt:
         return alt
-    return {"error": f"{prov['label']} chain failed. Last: {last}. "
-                     f"Try Settings → refresh models, or pick a different model/provider."}
+    if refusals:
+        # Don't dress a decline up as a technical fault, and don't dress it up as
+        # the model asking a question either (which is what happened before —
+        # a no-code reply went to the follow-up helper and came back as fake
+        # tappable options). Show what it said and let the user judge.
+        who = ", ".join(m for m, _ in refusals)
+        return {"error": "declined",
+                "detail": (f"The model declined this one ({who}). That's the provider's "
+                           f"model making its own call — TheDawg passed the request "
+                           f"straight through and has no setting that overrides it. "
+                           f"Different providers answer differently, so switching "
+                           f"provider in Settings is worth a try.\n\nWhat it said:\n\n"
+                           + refusals[0][1])}
+    return {"error": _chain_error(prov["label"], last)}
+
+
+def _chain_error(label, last):
+    """Say what actually went wrong, and give advice that matches it.
+
+    Every failure used to end with the same sentence: "Try Settings → refresh
+    models, or pick a different model/provider." For a 502 that is simply the
+    wrong advice — nothing about the model list is broken, the gateway had a bad
+    second — and it sent people into Settings to fiddle with a configuration that
+    was working fine. Refreshing the catalog is now suggested only when the
+    failure really is about the catalog.
+    """
+    low = (last or "").lower()
+    if "401" in low or "rejected the key" in low:
+        fix = f"Check the {label} key in Settings."
+    elif "429" in low or "rate-limit" in low or "quota" in low:
+        fix = (f"{label} is rate-limiting this key. Give it a moment and send again, or "
+               f"add a second provider key in Settings — builds fall through to it "
+               f"automatically when the first one is throttled.")
+    elif any(c in low for c in ("500", "502", "503", "504", "520", "522", "524", "529")):
+        fix = (f"{label} is having a bad moment — that's their end, not your setup. "
+               f"TheDawg already retried {MODEL_RETRIES} times with backoff and tried "
+               f"every other model on the account. Send it again shortly, or add a "
+               f"second provider key so it can route around an outage by itself.")
+    elif "timed out" in low or "stopped responding" in low:
+        fix = (f"The model went quiet for {MODEL_IDLE_TIMEOUT}s mid-answer. If it's slow "
+               f"rather than stuck, give it more room: THEDAWG_IDLE_TIMEOUT=180. "
+               f"THEDAWG_REASONING=medium also makes build calls answer a lot faster.")
+    elif any(c in low for c in ("unreachable", "connection", "dropped", "resolve", "network")):
+        fix = "Nothing reached the provider — check the network."
+    elif "not available" in low or "404" in low or "no such model" in low:
+        fix = ("That model isn't callable with this key. Settings → ↻ refresh models "
+               "pulls the list your key can actually use.")
+    elif "empty reply" in low:
+        fix = (f"{label} kept returning an empty response — usually transient on their "
+               f"side. Try again, or pick a different model in Settings.")
+    elif "context" in low or "too large" in low:
+        fix = ("The conversation outgrew the model's window. Hit ＋ new tool, or pick a "
+               "larger-context model in Settings.")
+    else:
+        fix = ("Try again. If it keeps happening, pick a different model or provider in "
+               "Settings.")
+    return f"{label} couldn't finish this build.\n\nLast error: {last}\n\n{fix}"
 
 _FENCE = re.compile(r"^([ \t]*)(`{3,})[ \t]*([A-Za-z0-9_+.-]*)[ \t]*$", re.M)
 
@@ -3409,7 +3699,7 @@ def _window_present(display, _xdo_cache=[]):
 _PROBE_LOCK = threading.RLock()
 
 
-def probe_run(code, name="tool", settle=None, interact=None):
+def probe_run(code, name="tool", settle=None, interact=None, allow_danger=False):
     """Open the GUI on a headless virtual display, watch it, screenshot it, and
     report what happened. Stores the result in LAST_PROBE and the image at SHOT_PATH.
     Returns a dict with a ready-to-read 'report' string.
@@ -3423,10 +3713,10 @@ def probe_run(code, name="tool", settle=None, interact=None):
     with tool B's screenshot is worse than waiting a couple of seconds.
     """
     with _PROBE_LOCK:
-        return _probe_run_locked(code, name, settle, interact)
+        return _probe_run_locked(code, name, settle, interact, allow_danger)
 
 
-def _probe_run_locked(code, name="tool", settle=None, interact=None):
+def _probe_run_locked(code, name="tool", settle=None, interact=None, allow_danger=False):
     if settle is None:
         settle = PROBE_SETTLE
     if interact is None:
@@ -3436,14 +3726,25 @@ def _probe_run_locked(code, name="tool", settle=None, interact=None):
     # and the auto-polish loop calls it on every round, unattended. So a tool that
     # ▶ launch refuses to run without a warning was executed silently here, up to
     # eight times. Refuse instead, and point at the path that can ask.
-    danger = looks_dangerous(code)
+    # An irreversible-looking line is a reason to ASK, not a reason to refuse.
+    #
+    # This was a hard wall with no way through: \ud83d\udd0e self-test simply would not run
+    # the tool, and the polish loop stopped dead on it. So for a whole legitimate
+    # category \u2014 a disk formatter, a bulk deleter, a secure-wipe utility \u2014 the
+    # self-test feature did not exist. The gate is here to stop a MODEL SLIP from
+    # wrecking the machine, and the thing that distinguishes a slip from the
+    # intended behaviour is the user. So ask the user. \u25b6 launch has always worked
+    # this way; the self-test now matches it.
+    danger = [] if allow_danger else looks_dangerous(code)
     if danger:
         res = {"ran": False, "shot": False, "kind": "blocked-danger",
-               "danger": danger,
-               "report": ("SELF-TEST BLOCKED. This code contains destructive commands, and "
-                          "the self-test runs it for real:\n  - " + "\n  - ".join(danger) +
-                          "\n\nNothing was executed. If this is deliberate, use \u25b6 launch, "
-                          "which asks before running. Otherwise remove those lines.")}
+               "danger": danger, "confirmable": True,
+               "report": ("SELF-TEST PAUSED \u2014 it needs your go-ahead. The self-test runs "
+                          "the tool for real, and these lines do something "
+                          "irreversible:\n  - " + "\n  - ".join(danger) +
+                          "\n\nNothing has been executed yet. If that IS what the tool is "
+                          "meant to do, choose \u201crun it anyway\u201d and the self-test "
+                          "will go ahead on the hidden display.")}
         LAST_PROBE.clear(); LAST_PROBE.update(res); return res
     tk = detect_toolkit(code)
     if not IS_LINUX:
@@ -5692,7 +5993,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/probe":
             # TheDawg self-test: open the window headlessly, screenshot it, poke it,
             # and report what it saw. Also logged so "send log to AI" has context.
-            p = probe_run(data.get("code", ""), data.get("name", "tool"))
+            p = probe_run(data.get("code", ""), data.get("name", "tool"),
+                          allow_danger=bool(data.get("confirm")))
             if p.get("ran"):
                 if p.get("crashed_on_interact"):
                     verdict = "self-test: window CRASHES on interaction"
