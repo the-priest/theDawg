@@ -52,7 +52,7 @@ import urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "2.5.4"
+__version__ = "2.5.6"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --------------------------------------------------------------------------
@@ -968,7 +968,24 @@ def library_save(name, code, messages, version="testing", args="", sid=None,
     conversation, the version badge, and the test args. Reopening it restores all of
     that so you continue exactly where you left off — like saving a chat."""
     os.makedirs(LIBRARY_DIR, exist_ok=True)
+    # The record id was just _safe_id(name), and the name is auto-derived from the
+    # tool's own window title. Two DIFFERENT tools that happen to title themselves
+    # the same thing — or "my tool" and "my_tool" — landed on one filename, and the
+    # second ★ library silently destroyed the first. No warning, no undo, and the
+    # library list showed one entry where the user had saved two. Re-saving the
+    # SAME tool must still overwrite (that's the point), so match on the session it
+    # came from and only then reuse the slot; otherwise take the next free suffix.
     tid = _safe_id(name)
+    existing = read_json(os.path.join(LIBRARY_DIR, tid + ".json"))
+    if isinstance(existing, dict) and existing.get("from_session") and sid \
+            and existing.get("from_session") != sid:
+        n = 2
+        while os.path.exists(os.path.join(LIBRARY_DIR, f"{tid}-{n}.json")) and n < 200:
+            prior = read_json(os.path.join(LIBRARY_DIR, f"{tid}-{n}.json")) or {}
+            if prior.get("from_session") == sid:
+                break
+            n += 1
+        tid = f"{tid}-{n}"
     rec = {"id": tid, "name": name or tid, "code": code,
            "messages": messages or [], "version": version or "testing",
            "args": args or "", "toolkit": (detect_toolkit(code or "") or {}).get("label"),
@@ -1132,7 +1149,36 @@ GUI_TOOLKITS = {
     "wx":            ("wxPython",      "wxPython",      ()),
 }
 
-_IMPORT_RE = re.compile(r"^\s*(?:import|from)\s+([a-zA-Z0-9_\.]+)", re.M)
+# Top-level module names in an import statement.
+#
+# This used to capture ONE name: `^\s*(?:import|from)\s+([a-zA-Z0-9_.]+)`. So on
+#     import requests, bs4
+# it saw `requests` and nothing else, and on
+#     import sys, tkinter as tk
+# it saw `sys` — which means detect_toolkit() returned None for a real Tkinter
+# tool. That is not cosmetic: run_code() branches on the toolkit, so the GUI took
+# the NON-GUI path, which runs the tool with captured output and a 120s timeout.
+# A perfectly good window never appeared and the user got
+# "Killed: exceeded 120s (possible infinite loop)". The same miss left the second
+# package out of ⬇ deps and out of the PyInstaller build.
+_IMPORT_RE = re.compile(r"^[ \t]*(?:import|from)[ \t]+([a-zA-Z0-9_.]+)", re.M)
+_IMPORT_LINE_RE = re.compile(r"^[ \t]*import[ \t]+([^\n#;]+)", re.M)
+
+
+def _imported_tops(code):
+    """Every top-level module name imported anywhere in the source."""
+    tops = set()
+    for m in _IMPORT_RE.finditer(code or ""):
+        t = m.group(1).split(".")[0]
+        if t:
+            tops.add(t)
+    # `import a, b as c, d.e` — the regex above only ever sees `a`
+    for m in _IMPORT_LINE_RE.finditer(code or ""):
+        for part in m.group(1).split(","):
+            nm = part.strip().split(" as ")[0].strip().split(".")[0].strip()
+            if nm and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", nm):
+                tops.add(nm)
+    return tops
 _TOOLKIT_CACHE = {}
 _TOOLKIT_LOCK = threading.Lock()
 
@@ -1163,9 +1209,7 @@ def detect_toolkit(code):
 
 
 def _detect_toolkit_uncached(code):
-    tops = set()
-    for m in _IMPORT_RE.finditer(code):
-        tops.add(m.group(1).split(".")[0])
+    tops = _imported_tops(code)
     # order matters: check the explicit toolkits before the generic `gi` binding
     for mod in ("PyQt6", "PySide6", "PyQt5", "PySide2", "customtkinter", "wx", "gi", "tkinter"):
         if mod in tops:
@@ -1193,8 +1237,7 @@ def detect_deps(code):
                "platform","tkinter"}
     toolkit_mods = set(GUI_TOOLKITS.keys()) | {"gi"}
     pip = set()
-    for m in _IMPORT_RE.finditer(code):
-        top = m.group(1).split(".")[0]
+    for top in _imported_tops(code):
         if (top and top not in std and top not in obvious
                 and top not in toolkit_mods and not top.startswith("_")):
             pip.add(top)
@@ -1279,8 +1322,50 @@ def looks_dangerous(code):
             out.append("line %d: %s" % (line, " ".join(m.group(0).split())[:80]))
     return out
 
-def _http_post(url, headers, body, timeout=45):
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers)
+# ==========================================================================
+# MODEL TRANSPORT
+#
+# THE BUG THIS SECTION EXISTS TO FIX (the "it errors out after a few minutes"
+# one): every model call went through a single blocking POST with a 45-second
+# ceiling. Forty-five seconds is a fine bound for a chat reply. It is nowhere
+# near enough for the build path, which asks a REASONING model, at
+# reasoning_effort=high, with max_tokens=32000, to write a complete GUI tool.
+# That call routinely runs 1-4 minutes, and nothing comes back until the last
+# token — so the read timed out EVERY time, on a request the provider was
+# happily still working on.
+#
+# What the user saw: "Calling SiliconFlow model ..." for 45s, then "unreachable
+# — retrying...", twice more (137s on a pinned model), then the same again for
+# the full-rewrite attempt after the patch round — 4.6 minutes to a "chain
+# failed" error, no code, every time, while being billed for three completed
+# generations nobody ever read.
+#
+# Two changes fix it properly:
+#   1. The response is STREAMED. Tokens arrive as they're produced, so the
+#      timeout that matters is "how long since the last byte", not "how long in
+#      total" — a slow model is no longer indistinguishable from a dead one.
+#   2. The budget is per-tier and generous, with an idle guard that still fails
+#      fast on a genuinely dead endpoint.
+# Streaming also feeds the activity channel, so the UI shows a live character
+# count instead of a spinner that looks hung.
+# ==========================================================================
+def _env_int(name, default, lo, hi):
+    try:
+        return max(lo, min(hi, int(os.environ.get(name, "") or default)))
+    except ValueError:
+        return default
+
+# seconds of TOTAL SILENCE (not a single byte from the provider) before we call
+# a call dead. Streaming makes this the meaningful bound.
+MODEL_IDLE_TIMEOUT = _env_int("THEDAWG_IDLE_TIMEOUT", 90, 15, 600)
+# absolute ceiling per call, per tier. Build work gets real room; clerical calls
+# stay short so a wedged helper can't hold a build up.
+MODEL_TIMEOUT = {"build": _env_int("THEDAWG_TIMEOUT", 900, 60, 3600),
+                 "cheap": _env_int("THEDAWG_TIMEOUT_CHEAP", 120, 20, 900)}
+
+
+def _http_post(url, headers, body, timeout=None):
+    """Non-streaming POST. Kept for gateways that reject `stream`."""
     # urlopen's own timeout bounds BOTH connect and read for this socket, so a dead
     # endpoint fails in seconds instead of freezing the "forging" spinner. We do NOT
     # touch socket.setdefaulttimeout(): that's process-global, and _http_post runs on
@@ -1288,8 +1373,98 @@ def _http_post(url, headers, body, timeout=45):
     # parallel model-fetch threads at startup). Racing threads restoring that global
     # could leave EVERY other socket in the process — the HTTP server, the Xvfb
     # waits — stuck on this timeout.
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout or MODEL_TIMEOUT["build"]) as resp:
         return json.loads(resp.read().decode())
+
+
+def _http_post_stream(url, headers, body, idle_timeout=None, total_timeout=None,
+                      on_progress=None, want_usage=True):
+    """Streaming POST against an OpenAI-compatible /chat/completions endpoint.
+
+    Returns the SAME shape a non-streaming call returns — {"choices": [...],
+    "usage": {...}} — so every caller downstream is unchanged. The socket
+    timeout applies per read, which is exactly the semantics we want: a model
+    that is slowly writing keeps the connection alive, a hung one doesn't.
+    """
+    idle_timeout = idle_timeout or MODEL_IDLE_TIMEOUT
+    total_timeout = total_timeout or MODEL_TIMEOUT["build"]
+    body = dict(body)
+    headers = dict(headers)
+    # a couple of stricter gateways refuse to stream unless you ask for it here too
+    headers["Accept"] = "text/event-stream, application/json"
+    body["stream"] = True
+    if want_usage:
+        # ask for the usage block on the final frame; without it a streamed call
+        # would fall back to the character estimate and the cost chip would drift.
+        body["stream_options"] = {"include_usage": True}
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers)
+
+    content, reasoning = [], []
+    usage, finish = {}, None
+    saw_event = False
+    raw_body = []
+    started = time.time()
+    last_tick = 0.0
+
+    with urllib.request.urlopen(req, timeout=idle_timeout) as resp:
+        for raw in resp:                       # one SSE line at a time
+            if time.time() - started > total_timeout:
+                raise TimeoutError(f"model call exceeded {int(total_timeout)}s")
+            try:
+                line = raw.decode("utf-8", "replace")
+            except Exception:
+                continue
+            if len(raw_body) < 64:
+                raw_body.append(line)          # in case this isn't SSE at all
+            line = line.strip()
+            if not line or line.startswith(":"):
+                continue                       # keep-alive comment
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                ev = json.loads(payload)
+            except Exception:
+                continue
+            saw_event = True
+            if ev.get("usage"):
+                usage = ev["usage"]
+            for ch in ev.get("choices") or []:
+                # `delta` on a stream; a few gateways echo `message` instead
+                d = ch.get("delta") or ch.get("message") or {}
+                c = d.get("content")
+                if c:
+                    content.append(c)
+                r = d.get("reasoning_content") or d.get("reasoning")
+                if isinstance(r, str) and r:
+                    reasoning.append(r)
+                if ch.get("finish_reason"):
+                    finish = ch["finish_reason"]
+            if on_progress:
+                now = time.time()
+                if now - last_tick >= 1.0:     # at most one activity event a second
+                    last_tick = now
+                    try:
+                        on_progress(sum(len(x) for x in content),
+                                    sum(len(x) for x in reasoning),
+                                    now - started)
+                    except Exception:
+                        pass
+
+    if not saw_event:
+        # The gateway ignored `stream` and answered with an ordinary JSON body.
+        # Parse it rather than reporting an empty reply.
+        try:
+            return json.loads("".join(raw_body))
+        except Exception:
+            pass
+    msg = {"content": "".join(content)}
+    if reasoning:
+        msg["reasoning_content"] = "".join(reasoning)
+    return {"choices": [{"message": msg, "finish_reason": finish}], "usage": usage}
 
 # --------------------------------------------------------------------------
 # CONTEXT BUDGET  -- keep requests under the ACTIVE model's real window
@@ -1593,6 +1768,26 @@ def _err_detail(exc):
     return detail
 
 
+def _unpack_reply(data):
+    """(reply, finish_reason) from a completion, defensively.
+
+    Shared so the 401 host-retry and the transient-retry paths behave exactly
+    like the main one. They each had their own `content or reasoning_content`
+    line, which meant a truncated or reasoning-only response coming back through
+    a RETRY still surfaced as a raw monologue with no `truncated` flag — the very
+    thing the main path stopped doing.
+    """
+    choices = (data or {}).get("choices") or []
+    if not choices:
+        return "", ""
+    msg = choices[0].get("message") or {}
+    finish = (choices[0].get("finish_reason") or "").lower()
+    reply = msg.get("content") or ""
+    if not reply.strip() and finish != "length":
+        reply = msg.get("reasoning_content") or ""
+    return reply, finish
+
+
 def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None,
                tier="cheap", max_tokens=None):
     """Call the selected provider, falling through its model chain on error.
@@ -1671,6 +1866,37 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
     # (timeouts, 5xx, connection resets), never a 400/401/quota which won't fix
     # itself on a retry.
     single_pick = len(chain) == 1
+    total_timeout = MODEL_TIMEOUT.get(tier, MODEL_TIMEOUT["cheap"])
+    model = None                     # bound by the loop; referenced by _post below
+
+    def _progress(nchars, nreason, elapsed):
+        # Live feedback while the model writes. This is what turns "the spinner
+        # has been going for two minutes, is it dead?" into a visible word count,
+        # and it keeps the SSE relay's idle watchdog fed for the whole generation.
+        _emit("gen", chars=nchars, reasoning=nreason,
+              secs=int(elapsed), model=model)
+
+    def _post(b):
+        """One request. Streams unless this (provider, model) proved it can't."""
+        if (pid, model, "stream") in _UNSUPPORTED_FIELDS:
+            return _http_post(chat_url, headers, b, timeout=total_timeout)
+        try:
+            return _http_post_stream(
+                chat_url, headers, b,
+                idle_timeout=MODEL_IDLE_TIMEOUT, total_timeout=total_timeout,
+                on_progress=_progress if tier == "build" else None,
+                want_usage=(pid, model, "stream_options") not in _UNSUPPORTED_FIELDS)
+        except urllib.error.HTTPError as he:
+            det = _err_detail(he).lower()
+            if he.code in (400, 404, 422, 501) and "stream_options" in det:
+                _UNSUPPORTED_FIELDS.add((pid, model, "stream_options"))
+                return _post(b)
+            if he.code in (400, 404, 422, 501) and "stream" in det:
+                # this gateway won't stream — remember it and take the plain path
+                _UNSUPPORTED_FIELDS.add((pid, model, "stream"))
+                return _http_post(chat_url, headers, b, timeout=total_timeout)
+            raise
+
     for model in chain:
         _emit("stage", text=f"Calling {prov['label']} model {model}...")
         # trim to THIS model's context window — the fix for "dies after long use":
@@ -1683,6 +1909,7 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
             last = f"{model}: skipped (payload exceeds its context window)"
             context_hit = True
             continue
+        t_call = time.time()
         try:
             headers = {
                 "Content-Type": "application/json",
@@ -1698,7 +1925,7 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
             if effort and (pid, model, "reasoning_effort") not in _UNSUPPORTED_FIELDS:
                 body["reasoning_effort"] = effort
             try:
-                data = _http_post(chat_url, headers, body)
+                data = _post(body)
             except urllib.error.HTTPError as he:
                 # A gateway that doesn't know these fields answers 400. Remember
                 # that and retry clean, rather than failing the whole request over
@@ -1714,7 +1941,7 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
                         dropped = True
                 if not dropped:
                     raise
-                data = _http_post(chat_url, headers, body)
+                data = _post(body)
             # Defensive unpacking. `data["choices"][0]["message"]["content"]` has
             # three ways to blow up or come back empty against a real gateway:
             # an empty choices list on a soft error, a null content, and reasoning
@@ -1725,15 +1952,37 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
                 last = f"{model}: the provider returned no choices"
                 continue
             msg = choices[0].get("message") or {}
-            reply = msg.get("content") or msg.get("reasoning_content") or ""
+            finish = (choices[0].get("finish_reason") or "").lower()
+            # `content` empty with a reasoning trace present means one of two very
+            # different things, and treating them the same is how a build ends with
+            # no code and no explanation:
+            #   finish_reason=stop   -> this gateway simply files the answer under
+            #                           reasoning_content. Use it.
+            #   finish_reason=length -> the reasoning budget ate max_tokens before a
+            #                           single line of code was written. That is a
+            #                           FAILURE, not an answer. Say so; handing the
+            #                           raw monologue back as the reply is what made
+            #                           TheDawg respond with a wall of thinking and
+            #                           no tool.
+            reply = msg.get("content") or ""
+            if not reply.strip() and finish != "length":
+                reply = msg.get("reasoning_content") or ""
             if not reply.strip():
-                last = f"{model}: the provider returned an empty reply"
+                if finish == "length":
+                    last = (f"{model}: hit the {body.get('max_tokens') or 'output'}-token "
+                            f"ceiling while reasoning and never wrote an answer")
+                else:
+                    last = f"{model}: the provider returned an empty reply"
                 continue
             record_usage(pid, model, data.get("usage") or {},
                          est_in_chars=sum(len(m.get("content") or "") for m in messages),
                          est_out_chars=len(reply))
             out = {"reply": reply, "model": model, "provider": pid,
                    "usage": data.get("usage") or {}}
+            if finish == "length":
+                # Cut off mid-answer. Downstream must not quietly treat half a
+                # file as a finished build.
+                out["truncated"] = True
             # a distinct reasoning trace (present on reasoning models when content
             # is also set) is worth showing the user — it's the "how it thinks"
             rc = msg.get("reasoning_content")
@@ -1772,16 +2021,17 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
                             # went through on the fallback host was uncapped and its
                             # spend never reached the usage counter.
                             try:
-                                data = _http_post(chat_url, headers, body)
-                                choices = data.get("choices") or []
-                                msg = (choices[0].get("message") if choices else {}) or {}
-                                reply = msg.get("content") or msg.get("reasoning_content") or ""
+                                data = _post(body)
+                                reply, finish = _unpack_reply(data)
                                 if not reply.strip():
                                     last = f"{model}: empty reply from {_HOST_OK[pid]}"
                                     continue
                                 record_usage(pid, model, data.get("usage") or {})
-                                return {"reply": reply, "model": model, "provider": pid,
-                                        "usage": data.get("usage") or {}}
+                                out = {"reply": reply, "model": model, "provider": pid,
+                                       "usage": data.get("usage") or {}}
+                                if finish == "length":
+                                    out["truncated"] = True
+                                return out
                             except Exception as e2:
                                 last = f"{model}: retry on {_HOST_OK[pid]} failed: {e2}"
                                 continue
@@ -1807,26 +2057,38 @@ def call_model(messages, provider_id=None, temperature=0.3, _fallback_chain=None
                 continue
             last = f"{model}: HTTP {e.code} {detail}"
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-            # transient transport error — worth another go on the SAME model
-            _emit("stage", text=f"{model} unreachable ({e}) — retrying...")
-            last = f"{model}: {e}"
-            if single_pick:
+            # Transient transport error — worth another go on the SAME model, but
+            # only when it failed FAST. Blindly retrying used to be free-ish against
+            # a 45s cap; now that a build call may legitimately run for minutes, an
+            # automatic re-send of a request the provider was still working on costs
+            # the user another full generation in both time and money. So: retry a
+            # connection that died quickly (dead host, reset, DNS), never one that
+            # burned its whole idle/total budget.
+            spent = time.time() - t_call
+            timed_out = isinstance(e, TimeoutError) or isinstance(
+                getattr(e, "reason", None), (TimeoutError, socket.timeout))
+            last = f"{model}: {e}" + (f" after {int(spent)}s" if timed_out else "")
+            if timed_out:
+                _emit("stage", text=f"{model} stopped responding after {int(spent)}s "
+                                    f"(no data for {MODEL_IDLE_TIMEOUT}s) — moving on")
+            else:
+                _emit("stage", text=f"{model} unreachable ({e}) — retrying...")
+            if single_pick and not timed_out and spent < 20:
                 for delay in (0.6, 1.5):
                     time.sleep(delay)
                     try:
-                        data = _http_post(chat_url, headers, body)
-                        choices = data.get("choices") or []
-                        if not choices:
-                            continue
-                        msg = choices[0].get("message") or {}
-                        reply = msg.get("content") or msg.get("reasoning_content") or ""
+                        data = _post(body)
+                        reply, finish = _unpack_reply(data)
                         if not reply.strip():
                             continue
                         record_usage(pid, model, data.get("usage") or {},
                                      est_in_chars=sum(len(m.get("content") or "") for m in messages),
                                      est_out_chars=len(reply))
-                        return {"reply": reply, "model": model, "provider": pid,
-                                "usage": data.get("usage") or {}}
+                        out = {"reply": reply, "model": model, "provider": pid,
+                               "usage": data.get("usage") or {}}
+                        if finish == "length":
+                            out["truncated"] = True
+                        return out
                     except Exception as e2:
                         last = f"{model}: retry failed: {e2}"
                         continue
@@ -3144,10 +3406,27 @@ def _window_present(display, _xdo_cache=[]):
         return False
 
 
+_PROBE_LOCK = threading.RLock()
+
+
 def probe_run(code, name="tool", settle=None, interact=None):
     """Open the GUI on a headless virtual display, watch it, screenshot it, and
     report what happened. Stores the result in LAST_PROBE and the image at SHOT_PATH.
-    Returns a dict with a ready-to-read 'report' string."""
+    Returns a dict with a ready-to-read 'report' string.
+
+    SERIALISED. Display numbers were already reserved per-probe, but SHOT_PATH and
+    LAST_PROBE are single globals and probe_run DELETES the screenshot on entry.
+    Two probes overlap routinely — the polish loop fires one per round while the
+    user can still press 🔎 self-test — and the second one wiped the first's image
+    out from under /api/shot.png (broken image in the panel) and then overwrote
+    LAST_PROBE, which is what "send log to AI" reads as evidence. Diagnosing tool A
+    with tool B's screenshot is worse than waiting a couple of seconds.
+    """
+    with _PROBE_LOCK:
+        return _probe_run_locked(code, name, settle, interact)
+
+
+def _probe_run_locked(code, name="tool", settle=None, interact=None):
     if settle is None:
         settle = PROBE_SETTLE
     if interact is None:
@@ -3560,8 +3839,24 @@ def try_edit_round(code, instruction, prior_user="", provider_id=None, retries=1
         res = call_model(convo, provider_id, temperature=BUILD_TEMPERATURE,
                          tier="build", max_tokens=16000)
         if res.get("error"):
-            return None
+            # The CALL failed — timeout, rate limit, dead provider. That has
+            # nothing to do with the patch format, so returning None here (which
+            # means "fall through to a full rewrite") sent the SAME failing
+            # request again with a bigger payload. On a provider that is down,
+            # that is what turned a 2-minute failure into a 5-minute one. Hand
+            # the error up; every caller already checks .get("error").
+            return {**res, "edit_call_failed": True}
         reply = res.get("reply", "")
+        # EDIT_PROMPT tells the model: "if the request genuinely requires
+        # rewriting most of the file, reply with the single word FULL_REWRITE".
+        # Nothing anywhere ever checked for it. A model that COMPLIED was scored
+        # as a failed patch — and three of those in a row made _edit_lost() switch
+        # targeted editing off for the rest of the process, quietly putting every
+        # later change back on the expensive full-rewrite path. Take the model at
+        # its word, and don't count doing as it was told against it.
+        if reply.strip().upper().startswith("FULL_REWRITE"):
+            EDIT_STATS["last_error"] = "model asked for a full rewrite"
+            return None
         blocks = parse_edit_blocks(reply)
         if not blocks:
             break
@@ -3731,8 +4026,27 @@ class ActivityChannel:
             pass  # a slow reader must never stall the build
 
     def finish(self, result):
-        self.q.put({"kind": "result", "result": result})
-        self.q.put(self.done)
+        """Deliver the final result — without ever blocking the build thread.
+
+        These were plain blocking puts on a maxsize=256 queue. If the client
+        disconnected mid-build the relay stops draining, and a chatty build then
+        wedged its worker thread here FOREVER holding the finished result. Drop
+        the backlog instead: nobody is reading the progress events at that point
+        anyway, and the result is the only frame that matters.
+        """
+        for ev in ({"kind": "result", "result": result}, self.done):
+            try:
+                self.q.put_nowait(ev)
+            except Exception:
+                try:
+                    while True:
+                        self.q.get_nowait()      # make room, oldest first
+                except Exception:
+                    pass
+                try:
+                    self.q.put_nowait(ev)
+                except Exception:
+                    pass
 
     def drain(self, timeout=0.5):
         import queue
@@ -3825,6 +4139,17 @@ def chat_with_autotest(messages, provider_id=None, base_code=None):
     for attempt in range(AUTOTEST_MAX_ROUNDS + 1):
         code = extract_code(res.get("reply", ""))
         if not code:
+            # A TRUNCATED reply with no code is not the model asking a question —
+            # it ran out of output budget. Say that plainly instead of routing it
+            # through the follow-up helper, which spends another model call turning
+            # half a sentence (or a raw reasoning trace) into fake "questions" and
+            # leaves the user staring at a build that produced nothing.
+            if res.get("truncated"):
+                return {"error":
+                        "The model hit its output limit before it finished writing the tool. "
+                        "Ask for something smaller, or give it more room: "
+                        "THEDAWG_REASONING=medium leaves far more of the budget for code, "
+                        "and a fresh session (＋ new tool) drops the accumulated history."}
             res["autotest"] = {"ran": False, "rounds": rounds}
             # No code means the model spoke or asked rather than built. If it asked the
             # user something, structure those questions into tappable options so the user
@@ -3866,14 +4191,26 @@ def chat_with_autotest(messages, provider_id=None, base_code=None):
             _emit("fixing", attempt=attempt + 2,
                   text="Feeding the exact failures back and correcting them")
         cmap = code_map(code)
-        fix_msg = (f"Your code failed an automatic quality check before I saw it. "
-                   f"Fix the SPECIFIC problems below and return the FULL corrected script "
-                   f"(one ```python block, nothing omitted).\n\n"
-                   f"=== problems found ===\n{report}\n")
-        if cmap:
-            fix_msg += f"\n=== structure of the code you just wrote (keep calls consistent) ===\n{cmap}\n"
-        fix_msg += ("\nFix only what is listed. Re-check every call's arguments and that every "
-                    "name is defined before use. Return the whole file.")
+        # A reply that hit the output ceiling isn't buggy code, it's HALF the file.
+        # Telling the model to "fix the problems below" makes it patch a fragment;
+        # what it actually needs to hear is "you ran out of room, write less".
+        cut_off = bool(res.get("truncated"))
+        if cut_off:
+            fix_msg = ("You ran out of output space partway through the file, so what "
+                       "arrived is incomplete and does not parse. Write the tool AGAIN, "
+                       "smaller: fewer features, shorter methods, no decorative comments "
+                       "— it must fit in one reply, complete, from the shebang to "
+                       "`main()`. Return one ```python block.\n\n"
+                       f"=== where it stopped parsing ===\n{report}\n")
+        else:
+            fix_msg = (f"Your code failed an automatic quality check before I saw it. "
+                       f"Fix the SPECIFIC problems below and return the FULL corrected script "
+                       f"(one ```python block, nothing omitted).\n\n"
+                       f"=== problems found ===\n{report}\n")
+            if cmap:
+                fix_msg += f"\n=== structure of the code you just wrote (keep calls consistent) ===\n{cmap}\n"
+            fix_msg += ("\nFix only what is listed. Re-check every call's arguments and that every "
+                        "name is defined before use. Return the whole file.")
         # A fix round is by definition a small, targeted change, so patch it rather
         # than resending the whole build conversation and retyping the whole file.
         # Before: ~18.5k in + 7.7k out. After: ~8k in + ~200 out.
@@ -3881,7 +4218,14 @@ def chat_with_autotest(messages, provider_id=None, base_code=None):
         # is waiting on it. If the patch format misses we fall straight to the full
         # rewrite below instead of spending an extra high-effort model round-trip
         # trying to correct the patch — one fewer call on every fix that misses.
-        nxt = try_edit_round(code, fix_msg, provider_id=provider_id, retries=0)
+        # A truncated file cannot be patched — there is nothing to anchor a
+        # SEARCH block against past the cut. Go straight to the rewrite.
+        nxt = None if cut_off else try_edit_round(code, fix_msg,
+                                                  provider_id=provider_id, retries=0)
+        if nxt is not None and nxt.get("error"):
+            res["autotest"] = {"ran": True, "passed": False, "rounds": rounds,
+                               "note": "auto-fix call failed: " + nxt["error"]}
+            return res
         if nxt is None:
             convo = convo + [
                 {"role": "assistant", "content": res["reply"]},
@@ -3894,7 +4238,7 @@ def chat_with_autotest(messages, provider_id=None, base_code=None):
             return res
         res = nxt
 
-def _autotest_existing(res, provider_id=None):
+def _autotest_existing(res, provider_id=None, system=None):
     """Run the same silent smoke-test/fix loop over a reply we already have,
     so the targeted-edit path gets identical verification to a full rewrite."""
     rounds = []
@@ -3921,7 +4265,7 @@ def _autotest_existing(res, provider_id=None):
         nxt = try_edit_round(code, fix_msg, provider_id=provider_id)
         if nxt is None:
             nxt = call_model(
-                [{"role": "system", "content": SYSTEM_PROMPT},
+                [{"role": "system", "content": system or SYSTEM_PROMPT},
                  {"role": "user", "content": fix_msg +
                   "\n\n=== CODE ===\n" + fenced(code) + "\n\nReturn the FULL corrected script."}],
                 provider_id, temperature=BUILD_TEMPERATURE, tier="build")
@@ -4709,6 +5053,24 @@ def render_log(full=True):
             lines.append("--- stderr ---\n" + e["stderr"].rstrip())
     return "\n".join(lines)
 
+def _caller_system(messages):
+    """The system prompt this conversation was actually built under.
+
+    fix_from_log() and polish_round() stripped every system message out of the
+    caller's conversation and hardcoded the GUI SYSTEM_PROMPT in its place. That
+    is fine for TheDawg itself and wrong for CLI Dawg, which shares this engine
+    and passes its own CLI doctrine: /fix on a command-line tool was handing the
+    model "Every tool you produce opens a real window — never a bare
+    command-line script" and then asking it to fix a terminal program. Honour
+    whatever system prompt the caller supplied; fall back to ours when there
+    isn't one (the HTTP routes prepend it already).
+    """
+    for m in messages or []:
+        if m.get("role") == "system" and (m.get("content") or "").strip():
+            return m["content"]
+    return SYSTEM_PROMPT
+
+
 def fix_from_log(code, messages, provider_id=None):
     """Send the current code + the run log + the latest runtime probe (what the
     window actually did and how it looked) to the model for a fix."""
@@ -4722,7 +5084,7 @@ def fix_from_log(code, messages, provider_id=None):
     if probe_report:
         extra = ("\n\n=== RUNTIME PROBE (TheDawg opened the window and looked at it) ===\n"
                  + probe_report)
-    convo = [{"role": "system", "content": SYSTEM_PROMPT}] + convo + [{
+    convo = [{"role": "system", "content": _caller_system(messages)}] + convo + [{
         "role": "user",
         "content": (
             "Here is the current tool plus everything TheDawg observed when it ran: the run "
@@ -4864,8 +5226,10 @@ def polish_round(code, messages, provider_id=None):
     # A polish round is a fix, not a rewrite: try it as targeted edits first. The
     # loop runs up to 8 times, so this is where full-file regeneration hurt most.
     res = try_edit_round(code, directive + "\n\n" + evidence_blob, provider_id=provider_id)
+    if res is not None and res.get("error"):
+        return res          # provider failure — don't re-send it as a full rewrite
     if res is None:
-        convo = [{"role": "system", "content": SYSTEM_PROMPT}, {
+        convo = [{"role": "system", "content": _caller_system(messages)}, {
             "role": "user",
             "content": (directive +
                         "\n\n=== CODE ===\n" + fenced(code) + "\n\n" + evidence_blob)
@@ -4873,7 +5237,7 @@ def polish_round(code, messages, provider_id=None):
         res = chat_with_autotest(convo, provider_id, base_code=code)
     else:
         # still smoke-test whatever the edits produced
-        res = _autotest_existing(res, provider_id)
+        res = _autotest_existing(res, provider_id, system=_caller_system(messages))
     # let the UI show what this round was actually reacting to
     res["evidence"] = {
         "smoke_passed": passed,
@@ -5076,6 +5440,13 @@ class Handler(BaseHTTPRequestHandler):
                 return False
 
         chan, thread = run_with_activity(fn)
+        # How long the relay tolerates COMPLETE silence from the build thread.
+        # This has to sit above the transport's own budget, or the watchdog fires
+        # first and reports "timed out" on a build that is still running fine —
+        # the client gets an error, the worker keeps going, and the finished code
+        # is thrown away. The model call now streams and emits progress every
+        # second, so real silence here means something is genuinely wedged.
+        idle_limit = int((MODEL_IDLE_TIMEOUT + 120) / 0.5)
         idle = 0
         while True:
             ev = chan.drain(timeout=0.5)
@@ -5083,8 +5454,11 @@ class Handler(BaseHTTPRequestHandler):
                 idle += 1
                 if not frame({"kind": "ping"}):
                     break
-                if idle > 240:
-                    frame({"kind": "result", "result": {"error": "the build timed out"}})
+                if idle > idle_limit:
+                    frame({"kind": "result", "result": {"error":
+                           f"No activity from the build for {int(idle * 0.5)}s — giving up "
+                           f"on this request. If the model is just slow, raise the budget "
+                           f"with THEDAWG_IDLE_TIMEOUT."}})
                     break
                 continue
             idle = 0
@@ -5238,8 +5612,15 @@ class Handler(BaseHTTPRequestHandler):
             pid = data.get("provider") or STATE["provider"]
             if pid not in PROVIDERS:
                 return self._send(200, {"error": "unknown provider"})
-            STATE["keys"][pid] = (data.get("key") or "").strip()
-            saved = persist_state() if STATE["keys"][pid] else False
+            # An empty key used to WIPE the in-memory key and then skip the save,
+            # so the running app went "no key" while the config file still held a
+            # perfectly good one — a state only a restart could explain. Blank now
+            # means "leave it alone", which is also what the Settings placeholder
+            # promises ("leave blank to keep it").
+            _newkey = (data.get("key") or "").strip()
+            if _newkey:
+                STATE["keys"][pid] = _newkey
+            saved = persist_state() if _newkey else False
             # a new key means we can now ask the provider what it actually offers
             fetched = None
             if STATE["keys"][pid]:

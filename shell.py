@@ -204,6 +204,19 @@ def run(url, config_dir, data_dir, icon_dir=None, on_quit=None, dev=False):
             # the click does nothing at all — which is why "⤓ download log" was
             # silently dead in the native window while working fine in a browser.
             self.web.connect("create", self._on_create)
+            # A download started from the page (the ⤓ log button builds a Blob and
+            # clicks an <a download>) reaches WebKit as a WebKitDownload, and
+            # WebKit will NOT pick a destination for you: with nothing connected
+            # to `download-started` / `decide-destination` the download is
+            # cancelled and the click does nothing. 2.2.3 swapped window.open()
+            # for the Blob to fix this button — which fixed it in the browser
+            # fallback only. This is the other half.
+            try:
+                sess = self.web.get_network_session()
+                if sess is not None:
+                    sess.connect("download-started", self._on_download)
+            except Exception:
+                pass
 
             # --- header bar ---------------------------------------------------
             head = Adw.HeaderBar()
@@ -305,6 +318,38 @@ def run(url, config_dir, data_dir, icon_dir=None, on_quit=None, dev=False):
         def _open_browser(self):
             try:
                 Gio.AppInfo.launch_default_for_uri(url, None)
+            except Exception:
+                pass
+
+        def _on_download(self, session, download):
+            """Give every download a real destination, in the user's Downloads."""
+            def _dest(dl, suggested):
+                try:
+                    d = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD) \
+                        or str(Path.home() / "Downloads")
+                    Path(d).mkdir(parents=True, exist_ok=True)
+                    name = suggested or "download"
+                    target = Path(d) / name
+                    stem, suf, n = target.stem, target.suffix, 1
+                    while target.exists() and n < 500:
+                        target = Path(d) / f"{stem}-{n}{suf}"
+                        n += 1
+                    dl.set_destination(target.as_uri())
+                except Exception:
+                    return False
+                return True
+
+            def _done(dl):
+                try:
+                    self.title_widget.set_subtitle("saved to Downloads")
+                    GLib.timeout_add_seconds(
+                        4, lambda: (self.title_widget.set_subtitle("python toolsmith"), False)[1])
+                except Exception:
+                    pass
+
+            try:
+                download.connect("decide-destination", _dest)
+                download.connect("finished", _done)
             except Exception:
                 pass
 

@@ -1072,7 +1072,16 @@ let state = {
   busy: false, pendingRelease: false, intakeDone: false, intakeAnswers: {},
   prevCode: null, sessionId: null, attachments: [], lastError: null, hasRun: false,
   ghUser: "", ghHolder: "", _panelTab: "sessions", _intakeQs: null, _followupEl: null,
+  /* Bumped every time the WORKSPACE is swapped out (＋ new tool, resume a
+     session, open from the library). A build already in flight belongs to the
+     workspace it was started in: without this, hitting ＋ new tool mid-build and
+     then getting the reply back loaded the OLD tool's code into the fresh
+     session, pushed the old assistant turn into the new conversation, and
+     autosaved the mixture as a brand-new session record. */
+  gen: 0,
 };
+function newWorkspace(){ state.gen++; state.busy=false;
+  $("#sendBtn").disabled=false; $("#sendBtn").classList.remove("busy"); clearThinking(); }
 let providers = [];
 
 /* ============================ attachments ============================ */
@@ -1340,7 +1349,14 @@ async function send(forced){
     const blobs=state.attachments.map(a=>{
       const ext=fileExt(a.name);
       const lang={json:"json",csv:"csv",sh:"bash",html:"html",xml:"xml",yaml:"yaml",yml:"yaml"}[ext]||"";
-      return `--- attached file: ${a.name} ---\n\`\`\`${lang}\n${a.text}\n\`\`\``;
+      /* fenceFor(), not a hardcoded ```. Attach a README, a markdown spec, or any
+         log containing a fenced example and the attachment's OWN fence closed
+         this one — the model got the file cut off at that point, the remainder
+         became loose prose, and the stray closer opened a phantom block that
+         extract_code could pick up instead of the tool. loadCodeFile() has used
+         fenceFor() since 2.2.3; this path was missed. */
+      const F=fenceFor(a.text);
+      return `--- attached file: ${a.name} ---\n${F}${lang}\n${a.text}\n${F}`;
     }).join("\n\n");
     payload=(typed?typed+"\n\n":"Here are reference files for this tool:\n\n")+blobs;
     state.attachments=[]; renderAttachments();
@@ -1524,6 +1540,18 @@ function onActivity(ev){
       // "unreachable, retrying…". These were dropped on the floor, so a slow
       // provider fallback looked like a dead build. Show the line at least.
       if(ev.text) setStage("working", ev.text); break;
+    case "gen":
+      // Live token flow from the provider. Until the model call streamed, a
+      // build that legitimately took two minutes was indistinguishable from a
+      // dead one — this is the difference between "it's stuck" and "it's busy".
+      {
+        const bits=[];
+        if(ev.chars) bits.push(`${Math.round(ev.chars/5)} words written`);
+        else if(ev.reasoning) bits.push("reasoning");
+        if(ev.secs) bits.push(`${ev.secs}s`);
+        setStage(ev.chars ? "writing code" : "planning", bits.join("  ·  ") || "working");
+      }
+      break;
     case "thinking":
       setStage("planning", ev.text||"Thinking it through");
       actStep("thinking","Planning the tool", ev.text||""); break;
@@ -1552,10 +1580,12 @@ function onActivity(ev){
 }
 
 /* stream a build; falls back to a single POST if streaming is unavailable */
-async function streamBuild(payload, onEvent){
+async function streamBuild(payload, onEvent, progress){
+  progress = progress || {};
   const resp = await fetch("/api/chat/stream",{method:"POST",
     headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
   if(!resp.ok || !resp.body) throw new Error("no stream");
+  progress.connected = true;
   const reader=resp.body.getReader(); const dec=new TextDecoder(); let buf="", result=null;
   for(;;){
     const {value, done}=await reader.read(); if(done) break;
@@ -1568,6 +1598,7 @@ async function streamBuild(payload, onEvent){
       let ev; try{ ev=JSON.parse(line.slice(5).trim()); }catch(_){ continue; }
       if(ev.kind==="ping") continue;
       if(ev.kind==="result"){ result=ev.result; continue; }
+      progress.started = true;      // the build is really running on the server
       onEvent(ev);
     }
   }
@@ -1583,15 +1614,33 @@ async function converse(){
   state._codeManual=false;
   let res=null;
   const payload={messages:state.messages, provider:$("#providerPick").value};
+  const gen=state.gen;                       // the workspace this build belongs to
+  const progress={connected:false, started:false};
   try{
-    res = await streamBuild(payload, onActivity);
+    res = await streamBuild(payload, onActivity, progress);
     if(res===null) throw new Error("stream ended without a result");
   }catch(e){
-    // graceful fallback to the plain endpoint
-    try{
-      res = await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify(payload)}).then(r=>r.json());
-    }catch(_){ res={error:"Could not reach the local server."}; }
+    // The fallback exists for a client that CAN'T stream — it re-runs the whole
+    // build on /api/chat. Doing that after a build was already under way is the
+    // worst possible response to a dropped connection: the user waits out a
+    // second full generation and pays for two. Only retry if nothing had started.
+    if(progress.started){
+      res={error:"The build was running but the connection to the local server dropped ("
+                 +((e&&e.message)||e)+"). Nothing was lost — send the message again."};
+    }else{
+      try{
+        res = await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify(payload)}).then(r=>r.json());
+      }catch(_){ res={error:"Could not reach the local server."}; }
+    }
+  }
+  /* The user moved on while this was in flight — ＋ new tool, resumed a session,
+     opened something from the library. Writing this reply into whatever is on
+     screen now would corrupt it, so drop it on the floor and say so once. */
+  if(gen!==state.gen){
+    clearThinking(); document.documentElement.classList.remove("building");
+    toast("A build from the previous tool finished — discarded, you'd moved on");
+    return;
   }
   clearThinking(); state.busy=false; $("#sendBtn").disabled=false; $("#sendBtn").classList.remove("busy");
   if(!res || res.error){ actFinish(false); addMsg("smith", fmtError(res||{})); return; }
@@ -2053,6 +2102,7 @@ async function renderSessions(){
   });
 }
 async function resumeSession(id){
+  newWorkspace();      // an in-flight build belongs to the tool we're leaving
   let r;
   try{ r=await fetch("/api/session/load",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})}).then(r=>r.json()); }
   catch(e){ toast("Couldn't load", true); return; }
@@ -2101,6 +2151,7 @@ async function renderLibrary(){
   });
 }
 async function loadFromLibrary(id){
+  newWorkspace();
   let r;
   try{ r=await fetch("/api/library/load",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})}).then(r=>r.json()); }
   catch(e){ toast("Couldn't load", true); return; }
@@ -2144,15 +2195,26 @@ $("#ghGenerate").onclick=async ()=>{
     holder:$("#ghHolder").value.trim()||$("#ghUser").value.trim(),
   };
   if(!details.username){ toast("GitHub username is required", true); return; }
+  if(state.busy){ toast("Something's already running — let it finish first", true); return; }
   state.ghUser=details.username; state.ghHolder=details.holder;
   $("#ghGenerate").disabled=true; $("#ghGenerate").textContent="polishing code…";
   state.pendingRelease=true;
+  /* This flow rewrites state.code and state.messages, and a release generation is
+     a full build that can run for minutes. It never claimed busy, so the composer
+     stayed live throughout: send a message mid-release and two writers interleave
+     on one conversation — the same bug the polish loop was fixed for in 2.2.3,
+     still open here. */
+  state.busy=true; $("#sendBtn").disabled=true;
+  const gen=state.gen;
+  const RELEASE_ASK="Produce the RELEASE version: polished, top docstring with usage, clean argparse CLI with --help, robust error handling, sensible exit codes, helpful comments, no dead code. Return the full script.";
+  const releaseDone=()=>{ if(gen===state.gen){ state.busy=false; $("#sendBtn").disabled=false; } };
   let rel;
   try{
-    const msgs=[...state.messages, {role:"user", content:"Produce the RELEASE version: polished, top docstring with usage, clean argparse CLI with --help, robust error handling, sensible exit codes, helpful comments, no dead code. Return the full script."}];
+    const msgs=[...state.messages, {role:"user", content:RELEASE_ASK}];
     rel=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({messages:msgs, provider:$("#providerPick").value})}).then(r=>r.json());
   }catch(e){ rel={error:"server"}; }
-  if(rel.error){ state.pendingRelease=false; toast("⚠ "+rel.error, true); resetGhBtn(); return; }
+  if(gen!==state.gen){ resetGhBtn(); return; }        // workspace swapped underneath us
+  if(rel.error){ state.pendingRelease=false; releaseDone(); toast("⚠ "+rel.error, true); resetGhBtn(); return; }
   // Pass rel.code (the server's authoritative extraction) so the release/repo
   // never gets truncated by the simpler client-side fence matcher — a tool whose
   // --help contains a ``` example closed a plain ``` fence early otherwise.
@@ -2162,17 +2224,25 @@ $("#ghGenerate").onclick=async ()=>{
      and not on any of the three error returns. It stayed true for the rest of
      the session, so the NEXT ordinary build came back badged "release". */
   state.pendingRelease=false;
-  if(relCode){ loadCode(relCode); setVersion("release"); state.messages.push({role:"assistant",content:rel.reply}); }
+  /* Push the USER turn too. Only the assistant reply was recorded, so the saved
+     conversation ended with a polished file that answered nothing: on the next
+     build the model was shown its own release rewrite with no request attached,
+     and two assistant turns ran back to back — which some gateways reject
+     outright for non-alternating roles. */
+  if(relCode){ loadCode(relCode); setVersion("release");
+    state.messages.push({role:"user", content:RELEASE_ASK});
+    state.messages.push({role:"assistant", content:rel.reply}); }
+  releaseDone();
   const finalCode=relCode||state.code;
   $("#ghGenerate").textContent="assembling repo…";
   let gh;
   try{ gh=await fetch("/api/github",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:finalCode, details, provider:$("#providerPick").value})}).then(r=>r.json()); }
   catch(e){ gh={error:"server"}; }
-  if(gh.error){ toast("⚠ "+gh.error, true); resetGhBtn(); return; }
+  if(gh.error){ releaseDone(); toast("⚠ "+gh.error, true); resetGhBtn(); return; }
   let written;
   try{ written=await fetch("/api/github/write",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:finalCode, name:details.repo, github:gh.github, details})}).then(r=>r.json()); }
   catch(e){ written={error:"server"}; }
-  resetGhBtn();
+  resetGhBtn(); releaseDone();
   if(written.error){ toast("⚠ "+written.error, true); return; }
   showGhResult(written);
 };
@@ -2322,7 +2392,8 @@ $("#fixLogBtn").onclick=async ()=>{
   try{ res=await fetch("/api/fixlog",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:state.code, messages:state.messages, provider:$("#providerPick").value})}).then(r=>r.json()); }
   catch(e){ res={error:"Couldn't reach the local server."}; }
   clearThinking(); state.busy=false;
-  applyModelResult(res, "Sent the run log to the AI to diagnose.");
+  applyModelResult(res, "Sent the run log to the AI to diagnose.",
+    "Here's the run log and the runtime probe for the current tool — diagnose what went wrong and fix it.");
 };
 
 /* ============================ auto-polish loop ============================ */
@@ -2371,6 +2442,7 @@ $("#polishBtn").onclick=async ()=>{
     const {prose, code}=splitReply(res.reply, res.code);
     if(!code){ return endPolish("stopped — model returned no code"); }
     loadCode(code); setVersion("testing");
+    state.messages.push({role:"user", content:`Auto-polish round ${round}: test the tool, then fix whatever the evidence shows is actually wrong.`});
     state.messages.push({role:"assistant", content:res.reply});
     addMsg("smith", prose||"Polished a round.", `${state.name}.py v${String(state.ver).replace(/^v/,"")} · polish round ${round}`);
     if(!polishing) return;
@@ -2431,13 +2503,18 @@ $("#clearLogBtn").onclick=async ()=>{
   try{ await fetch("/api/log.clear",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}); toast("Run log cleared"); }
   catch(e){ toast("Couldn't reach the local server", true); }
 };
-function applyModelResult(res, introIfProse){
+function applyModelResult(res, introIfProse, askedFor){
   if(res.error){ addMsg("smith", fmtError(res)); return; }
   $("#modelName").textContent=res.model||$("#modelName").textContent; reflectKey(true);
   const {prose, code}=splitReply(res.reply, res.code);
   let flag=null;
   if(code){ loadCode(code); setVersion("testing"); playSound("done"); flag=`${state.name}.py v${String(state.ver).replace(/^v/,"")}`; const at=res.autotest; if(at && at.ran) flag+=at.passed?"  ·  ✓ auto-tested":"  ·  ⚠ check still failing"; }
   addMsg("smith", prose||introIfProse||"Done.", flag);
+  /* An assistant turn with no user turn in front of it. The saved conversation
+     then reads as the model volunteering a rewrite nobody asked for, and two
+     assistant messages can end up adjacent — which some gateways reject for
+     non-alternating roles. Record the request as well as the reply. */
+  if(askedFor) state.messages.push({role:"user", content:askedFor});
   state.messages.push({role:"assistant", content:res.reply});
 }
 $("#console").addEventListener("dblclick", ()=>{ if(state.lastError){ send("It failed with this error:\n"+state.lastError); state.lastError=null; } });
@@ -2473,7 +2550,12 @@ $("#refreshModels").onclick=async ()=>{
   try{ r=await fetch("/api/models/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider})}).then(x=>x.json()); }
   catch(e){ if(note) note.textContent="couldn't reach the server"; return; }
   const p=_settingsProvs.find(x=>x.id===provider);
-  if(p && r.models){ p.models=r.models; p.chosen=r.models[0]; p.live=(r.source==="live"); }
+  /* p.chosen is the model the USER pinned. Overwriting it with r.models[0]
+     meant hitting ↻ refresh silently re-selected the top-ranked model in the
+     dropdown — and then Save posted that as the new pin. Refreshing the catalog
+     is not a request to change the choice; keep it if it's still offered. */
+  if(p && r.models){ p.models=r.models; p.live=(r.source==="live");
+    if(!p.chosen || !r.models.includes(p.chosen)) p.chosen=r.models[0]; }
   populateModels(provider);
   if(r.source==="live") toast(`Pulled ${r.models.length} models from ${p?p.label:provider}`);
   else if(note) note.innerHTML=`<span style="color:var(--red)">couldn't fetch live list</span> — ${escapeHtml(r.error||"check the key")}`;
@@ -2494,7 +2576,8 @@ $("#settingsSave").onclick=async ()=>{
       const res=await fetch("/api/key",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({key, provider})}).then(r=>r.json());
       if(!res.hasKey){ toast("Key not accepted", true); return; }
       if(res.models){
-        if(p){ p.models=res.models; p.chosen=res.models[0]; p.live=(res.modelSource==="live"); }
+        if(p){ p.models=res.models; p.live=(res.modelSource==="live");
+          if(!p.chosen || !res.models.includes(p.chosen)) p.chosen=res.models[0]; }
         populateModels(provider);
         if(res.modelSource!=="live" && res.modelError) toast("Key saved, but live model fetch failed: "+res.modelError, true);
         if(model && !res.models.includes(model)) model="";
@@ -2514,6 +2597,7 @@ $("#scaleReset").onclick=()=>{ applyScale(1); toast("Interface size reset to 100
 
 /* ============================ new tool ============================ */
 $("#newBtn").onclick=()=>{
+  newWorkspace();
   state.messages=[]; state.code=null; state.name="tool"; state.pendingRelease=false; state.lastError=null;
   state.intakeDone=false; state.intakeAnswers={}; state.attachments=[]; state.hasRun=false; renderAttachments();
   state.ver="1.0.0"; state.named=false; state.title="Tool"; state._semverInit=false;
